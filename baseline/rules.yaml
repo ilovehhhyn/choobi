@@ -1,0 +1,114 @@
+# roobi/rules.yaml — the ENFORCEABLE half of roobi's style system.
+#
+# These rules are checked MECHANICALLY, with no LLM judgment. The prose half (voice, tone,
+# what's worth documenting) lives in style.md and is applied by the agent with judgment.
+#
+# This file is roobi's BASELINE default. Precedence:
+#   <package>/roobi/rules.yaml  >  <repo-root>/roobi/rules.yaml  >  this baseline
+# (nearest-wins). A repo may override or extend any key below.
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# Front-matter — the linkage layer that feeds the generated SSOT (roobi/index.md).
+# ---------------------------------------------------------------------------
+front_matter:
+  require_covers: true            # every doc must declare the code it documents
+  covers_must_resolve: true       # every glob/path in `covers:` must match >=1 existing file
+  allowed_keys: [covers, owner, type, status, title]
+
+# ---------------------------------------------------------------------------
+# Doc types — where each lives, whether roobi may CREATE it, and required sections.
+# spawnable: false  =>  roobi may UPDATE the doc but never CREATE one (public docs).
+# ---------------------------------------------------------------------------
+doc_types:
+  tutorial:
+    path: docs/public/tutorials/
+    spawnable: false
+    required_sections: [Overview, Prerequisites, Steps]
+  how_to:
+    path: docs/public/how-to/
+    spawnable: false
+    required_sections: [Goal, Steps]
+  reference:
+    path: docs/public/reference/
+    spawnable: false
+    required_sections: [Signature, Parameters, Returns, Example]
+  explanation:
+    path: docs/public/explanation/
+    spawnable: false
+    required_sections: [Context, Details]
+  feature:
+    path: docs/internal/features/
+    spawnable: true
+    required_sections: [Summary, Usage, Owner, Related code]
+  architecture:
+    path: docs/internal/architecture/
+    spawnable: true
+    required_sections: [Summary, Decision, Rationale, Related code]
+  debugging:
+    path: docs/internal/debugging/
+    spawnable: true
+    required_sections: [Symptom, Cause, Change, Related code]
+
+# ---------------------------------------------------------------------------
+# Public-doc spawn policy.
+# roobi NEVER creates public-facing docs, except the top-level README in a small
+# (single-package) repo. It may always UPDATE existing public docs.
+# ---------------------------------------------------------------------------
+public_docs:
+  spawn: false
+  readme_exception:
+    allow_spawn: true
+    only_if: single_package_repo   # never in a monorepo
+    path: README.md
+
+# ---------------------------------------------------------------------------
+# Markdown formatting — mechanical, right/wrong.
+# ---------------------------------------------------------------------------
+markdown:
+  headings:
+    single_h1: true
+    case: sentence                 # "Getting started", not "Getting Started"
+    no_skipped_levels: true
+  links:
+    internal_must_be_relative: true
+    no_bare_urls_in_prose: true
+    must_resolve: true             # linked files / anchors must exist
+  code_blocks:
+    require_language: true
+    examples_must_verify: true     # referenced commands / paths / signatures must exist
+  file_naming:
+    pattern: kebab-case
+    extension: .md
+
+# ---------------------------------------------------------------------------
+# Changelog / audit ledger. Doc bodies stay clean; history lives here.
+# ---------------------------------------------------------------------------
+changelog:
+  path: docs/internal/CHANGELOG.md
+  append_on_every_change: true
+  entry_fields: [date, doc, what, why, source]   # source = triggering PR / commit
+  inline_change_notes: false
+
+# ---------------------------------------------------------------------------
+# Staleness detection — what makes roobi consider a doc out of date.
+# ---------------------------------------------------------------------------
+staleness:
+  trigger: covered_code_changed    # a file matching a doc's `covers:` changed
+  check_on:
+    - pre_push
+    - pull_request
+  relevance_gate: llm              # after the mechanical trigger, an LLM confirms the
+                                   # change is actually doc-worthy before roobi writes
+
+# ---------------------------------------------------------------------------
+# Output / review behavior.
+# ---------------------------------------------------------------------------
+output:
+  edit_style: surgical             # minimal patches, not rewrites
+  default_action: propose          # draft a reviewable diff; do not auto-commit
+  block_push_when_stale: true      # pre-push stops with a message; user reviews & commits
+  auto_commit:
+    enabled: false                 # opt-in, per-doc, once trusted
+    allow_paths: []
