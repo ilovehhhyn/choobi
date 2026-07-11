@@ -1,16 +1,16 @@
-# roobi/rules.yaml — the ENFORCEABLE half of roobi's style system.
+# choobi/rules.yaml — the ENFORCEABLE half of choobi's style system.
 #
 # These rules are checked MECHANICALLY, with no LLM judgment. The prose half (voice, tone,
 # what's worth documenting) lives in style.md and is applied by the agent with judgment.
 #
-# This file is roobi's BASELINE default. Precedence:
-#   <package>/roobi/rules.yaml  >  <repo-root>/roobi/rules.yaml  >  this baseline
+# This file is choobi's BASELINE default. Precedence:
+#   <package>/choobi/rules.yaml  >  <repo-root>/choobi/rules.yaml  >  this baseline
 # (nearest-wins). A repo may override or extend any key below.
 
 version: 1
 
 # ---------------------------------------------------------------------------
-# Front-matter — the linkage layer that feeds the generated SSOT (roobi/index.md).
+# Front-matter — the linkage layer that feeds the generated SSOT (choobi/index.md).
 # ---------------------------------------------------------------------------
 front_matter:
   require_covers: true            # every doc must declare the code it documents
@@ -18,8 +18,8 @@ front_matter:
   allowed_keys: [covers, owner, type, status, title]
 
 # ---------------------------------------------------------------------------
-# Doc types — where each lives, whether roobi may CREATE it, and required sections.
-# spawnable: false  =>  roobi may UPDATE the doc but never CREATE one (public docs).
+# Doc types — where each lives, whether choobi may CREATE it, and required sections.
+# spawnable: false  =>  choobi may UPDATE the doc but never CREATE one (public docs).
 # ---------------------------------------------------------------------------
 doc_types:
   tutorial:
@@ -53,7 +53,7 @@ doc_types:
 
 # ---------------------------------------------------------------------------
 # Public-doc spawn policy.
-# roobi NEVER creates public-facing docs, except the top-level README in a small
+# choobi NEVER creates public-facing docs, except the top-level README in a small
 # (single-package) repo. It may always UPDATE existing public docs.
 # ---------------------------------------------------------------------------
 public_docs:
@@ -92,7 +92,7 @@ changelog:
   inline_change_notes: false
 
 # ---------------------------------------------------------------------------
-# Staleness detection — what makes roobi consider a doc out of date.
+# Staleness detection — what makes choobi consider a doc out of date.
 # ---------------------------------------------------------------------------
 staleness:
   trigger: covered_code_changed    # a file matching a doc's `covers:` changed
@@ -100,7 +100,7 @@ staleness:
     - pre_push
     - pull_request
   relevance_gate: llm              # after the mechanical trigger, an LLM confirms the
-                                   # change is actually doc-worthy before roobi writes
+                                   # change is actually doc-worthy before choobi writes
 
 # ---------------------------------------------------------------------------
 # Output / review behavior.
@@ -108,7 +108,9 @@ staleness:
 output:
   edit_style: surgical             # minimal patches, not rewrites
   default_action: propose          # draft a reviewable diff; do not auto-commit
-  block_push_when_stale: true      # pre-push stops with a message; user reviews & commits
+  block_push_when_stale: false     # push runs in background & NEVER blocks; choobi notifies after
+  notify_after_push: true          # report what was drafted once the background run finishes
+  fail_closed_verify: true         # unverifiable claims are flagged for a human, never asserted
   auto_commit:
     enabled: false                 # opt-in, per-doc, once trusted
     allow_paths: []
