@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "choobi"
+version = "0.1.0"
+description = "Local-first documentation agent that keeps docs consistent with the work."
+requires-python = ">=3.9"
+dependencies = ["PyYAML>=6", "pywebview>=5"]
+
+[project.scripts]
+choobi = "choobi.cli:main"
+
+[tool.setuptools]
+packages = ["choobi", "choobi.ui"]
+
+[tool.setuptools.package-data]
+"choobi" = ["baseline/*", "ui/static/*"]
