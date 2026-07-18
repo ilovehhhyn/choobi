@@ -1,0 +1,30 @@
+# choobi/policy.yaml — the create / update / stay-silent decision knobs.
+#
+# Baseline default. A repo may override any key. These are the deterministic guardrails
+# the disposition engine and verifier consult; prose judgment lives in style.md.
+
+version: 1
+
+# The writable documentation surface (repo-relative glob patterns). Nothing outside this
+# set is ever written, regardless of what the model proposes. This is a hard ceiling.
+allowlist:
+  - "README.md"
+  - "**/README.md"
+  - "docs/**/*.md"
+  - "docs/**/*.mdx"
+  - "build-plan.md"
+  - "*-plan.md"
+  - "docs/**/*-plan.md"
+
+# Automatic new-document creation is opt-in per repository (see build-plan §5.3).
+# When false, a would-create disposition is recorded as a documentation_gap and nothing
+# is written.
+allow_create: false
+
+# Secret-shaped content is rejected from any written output (build-plan §5.6).
+secret_patterns:
+  - "sk-ant-[A-Za-z0-9_-]{16,}"
+  - "sk-[A-Za-z0-9]{24,}"
+  - "AKIA[0-9A-Z]{16}"
+  - "ghp_[A-Za-z0-9]{36}"
+  - "-----BEGIN [A-Z ]*PRIVATE KEY-----"

@@ -1,0 +1,128 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>choobi</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <!-- Onboarding -->
+  <div id="screen-onboard" class="screen hidden">
+    <div class="center onboard-inner">
+      <div class="blob cheese"></div>
+      <div class="onboard-title">before we start</div>
+      <label>your name<input id="ob-name" type="text" placeholder="helen" autocomplete="off" /></label>
+      <label>anthropic api key <span class="opt">(optional if claude is logged in)</span>
+        <input id="ob-key" type="password" placeholder="sk-ant-…" autocomplete="off" /></label>
+      <label>runtime
+        <select id="ob-agent"><option value="claude">claude</option><option value="codex">codex</option></select>
+      </label>
+      <button id="ob-save">start</button>
+      <div id="ob-error"></div>
+    </div>
+  </div>
+
+  <!-- Home -->
+  <div id="screen-home" class="screen hidden">
+    <div class="topicons">
+      <button id="icon-commands" class="icon" title="commands" aria-label="commands">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linejoin="round">
+          <path d="M3 5a2 2 0 0 1 2-2h6v16H5a2 2 0 0 0-2 2z" />
+          <path d="M21 5a2 2 0 0 0-2-2h-6v16h6a2 2 0 0 1 2 2z" />
+        </svg>
+      </button>
+      <button id="icon-runtime" class="icon" title="runtime" aria-label="runtime">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="16" rx="1" />
+          <path d="M7 9l3 3-3 3" /><path d="M13 15h4" />
+        </svg>
+      </button>
+    </div>
+
+    <header>
+      <div class="blob cheese" id="home-blob"></div>
+      <div class="title">choobi</div>
+      <div class="sub" id="home-sub">docs that follow the work</div>
+    </header>
+    <nav>
+      <button data-panel="instructions" class="active">instructions</button>
+      <button data-panel="style">style</button>
+      <button data-panel="changelog">changelog</button>
+    </nav>
+    <main>
+      <!-- INSTRUCTIONS: repos -> [SOP | knowledge base] -->
+      <section id="panel-instructions" class="panel">
+        <div id="instr-repos" class="subview">
+          <div class="hint">repos that have run choobi init</div>
+          <ul id="instr-repo-list"><li class="empty">// loading…</li></ul>
+        </div>
+        <div id="instr-detail" class="subview hidden">
+          <button class="back" data-back="instr-repos">← repos</button>
+          <div class="detail-path" id="instr-repo-path"></div>
+          <div class="btn-row">
+            <button id="instr-sop-btn">SOP</button>
+            <button id="instr-kb-btn">knowledge base</button>
+          </div>
+          <div id="instr-sop" class="subpane hidden">
+            <div id="sop-state" class="opt"></div>
+            <textarea id="sop-editor" rows="13" spellcheck="false"></textarea>
+            <div class="row-actions">
+              <button id="sop-save">save</button>
+              <button id="sop-reset">return to default</button>
+            </div>
+            <div id="sop-result"></div>
+          </div>
+          <div id="instr-kb" class="subpane hidden">
+            <div id="kb-state" class="opt">choobi's map of this repo — edit and save, or regenerate.</div>
+            <textarea id="kb-editor" rows="13" spellcheck="false"></textarea>
+            <div class="row-actions">
+              <button id="kb-save">save</button>
+              <button id="kb-regen">regenerate</button>
+            </div>
+            <div id="kb-result"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STYLE -->
+      <section id="panel-style" class="panel hidden">
+        <div id="style-state" class="opt"></div>
+        <textarea id="style-editor" rows="16" spellcheck="false"></textarea>
+        <div class="row-actions">
+          <button id="style-save">save</button>
+          <button id="style-reset">return to default</button>
+        </div>
+        <div id="style-result"></div>
+      </section>
+
+      <!-- CHANGELOG: repos -> logs -> detail -->
+      <section id="panel-changelog" class="panel hidden">
+        <div id="cl-repos" class="subview">
+          <div class="hint">repos that have run choobi init</div>
+          <ul id="cl-repo-list"><li class="empty">// loading…</li></ul>
+        </div>
+        <div id="cl-logs" class="subview hidden">
+          <button class="back" data-back="cl-repos">← repos</button>
+          <div class="detail-path" id="cl-repo-path"></div>
+          <ul id="cl-log-list"></ul>
+        </div>
+        <div id="cl-detail" class="subview hidden">
+          <button class="back" data-back="cl-logs">← logs</button>
+          <pre id="cl-detail-text"></pre>
+        </div>
+      </section>
+
+      <!-- COMMANDS (opened from the book icon, not a nav tab) -->
+      <section id="panel-commands" class="panel hidden">
+        <button class="back" id="commands-back">← back</button>
+        <ul id="commands-list"></ul>
+      </section>
+    </main>
+    <footer><span id="status">ready</span></footer>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
