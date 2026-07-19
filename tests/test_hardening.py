@@ -76,9 +76,18 @@ class HardeningTest(unittest.TestCase):
 
         self.assertEqual(len(faces), 18)
         self.assertEqual(html.count('class="blob choobi-face"'), 2)
+        self.assertIn("edit choobi's sop for each repo", html)
+        self.assertIn("edit choobi's overall style", html)
+        self.assertIn("view choobi's work", html)
         self.assertNotIn("cheese", html + styles)
         self.assertEqual(app.count("Math.floor(Math.random() * FACE_COUNT)"), 1)
         self.assertIn('querySelectorAll(".choobi-face")', app)
+        self.assertIn('id="ob-runtime"', html)
+        self.assertIn("sign in with claude", html)
+        self.assertNotIn("<footer", html)
+        self.assertIn('aria-label="close commands">×</button>', html.replace("\n", " "))
+        self.assertIn("header { padding: 14px 12px 8px; border-bottom: 1px solid #000", styles)
+        self.assertIn("min_size=(340, 480)", Path(ui_server.__file__).read_text())
 
         httpd, url = ui_server.start_server()
         parsed = urlparse(url)
@@ -91,26 +100,55 @@ class HardeningTest(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
 
-    def test_style_api_edits_only_personal_overrides(self) -> None:
+    def test_onboarding_selects_runtime_and_requires_successful_login(self) -> None:
+        httpd, url = ui_server.start_server()
+        parsed = urlparse(url)
+        endpoint = f"{parsed.scheme}://{parsed.netloc}/api/onboard?{parsed.query}"
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps({"name": "Helen", "agent": "claude"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with mock.patch("choobi.ui.server.auth.ensure", return_value=["logged in"]), \
+                 mock.patch("choobi.ui.server.auth.is_logged_in", return_value=True), \
+                 urllib.request.urlopen(request) as response:
+                payload = json.load(response)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["runtime_state"], "ready")
+            cfg = config.Config.load()
+            self.assertEqual(cfg.name, "Helen")
+            self.assertEqual(cfg.agent, "claude")
+            self.assertTrue(cfg.onboarded)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_style_api_edits_a_full_personal_copy(self) -> None:
         httpd, url = ui_server.start_server()
         parsed = urlparse(url)
         endpoint = f"{parsed.scheme}://{parsed.netloc}/api/style?{parsed.query}"
         try:
             with urllib.request.urlopen(endpoint) as response:
                 payload = json.load(response)
-            self.assertEqual(payload, {"content": "", "is_personal": False})
+            self.assertEqual(
+                payload, {"content": baseline.baseline_style(), "is_personal": False}
+            )
 
+            customized = baseline.baseline_style().replace(
+                "Use sentence-case headings", "Use title-case headings"
+            )
             request = urllib.request.Request(
                 endpoint.replace("/api/style?", "/api/style/save?"),
-                data=json.dumps({"content": "Prefer short headings.\n"}).encode(),
+                data=json.dumps({"content": customized}).encode(),
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
             with urllib.request.urlopen(request) as response:
                 self.assertTrue(json.load(response)["is_personal"])
-            self.assertEqual(
-                config.personal_style_path().read_text(), "Prefer short headings.\n"
-            )
+            self.assertEqual(config.personal_style_path().read_text(), customized)
+            self.assertEqual(baseline.resolved_style(), customized)
 
             reset = urllib.request.Request(
                 endpoint.replace("/api/style?", "/api/style/reset?"),
@@ -118,8 +156,10 @@ class HardeningTest(unittest.TestCase):
             )
             with urllib.request.urlopen(reset) as response:
                 self.assertEqual(
-                    json.load(response), {"ok": True, "is_personal": False, "content": ""}
+                    json.load(response), {"ok": True, "is_personal": False,
+                                          "content": baseline.baseline_style()}
                 )
+            self.assertFalse(config.personal_style_path().exists())
         finally:
             httpd.shutdown()
             httpd.server_close()
@@ -251,7 +291,11 @@ class HardeningTest(unittest.TestCase):
         })
         result = engine.run_update(
             self.root, engine.UpdateRequest(source_commit=head, rev_range=f"{head}^..{head}"),
-            config.Config(onboarded=True), FakeRuntime(response),
+            config.Config(onboarded=True), FakeRuntime([
+                json.dumps({"action": "create", "doc": "", "area": "public API",
+                            "scope": "area"}),
+                response,
+            ]),
         )
         self.assertEqual(result.status, "committed")
 
@@ -405,6 +449,11 @@ class HardeningTest(unittest.TestCase):
     def test_creation_is_opt_in(self) -> None:
         repo_id = config.checkout_id(gitio.common_dir(self.root))
         self.assertFalse(repos.sop_allows_create(repo_id, str(self.root)))
+        default = repos.default_sop(str(self.root))
+        self.assertIn("data retention periods", default)
+        self.assertIn("privacy boundaries", default)
+        self.assertIn("user-visible configuration keys", default)
+        self.assertIn("Repository areas and cross-cutting features", default)
 
     def test_invalid_sop_fails_instead_of_disabling_policy(self) -> None:
         repo_id = config.checkout_id(gitio.common_dir(self.root))
@@ -434,7 +483,8 @@ class HardeningTest(unittest.TestCase):
         _git(self.root, "add", "-A")
         _git(self.root, "commit", "-qm", "add public api")
         head = gitio.resolve(self.root, "HEAD")
-        response = json.dumps({"action": "create", "doc": ""})
+        response = json.dumps({"action": "create", "doc": "", "area": "public API",
+                               "scope": "area"})
         result = engine.run_update(
             self.root,
             engine.UpdateRequest(source_commit=head, rev_range=f"{head}^..{head}"),
@@ -495,6 +545,9 @@ class HardeningTest(unittest.TestCase):
         def answer(prompt: str) -> str:
             self.assertIn("ALPHA_SENTINEL", prompt)
             self.assertIn("BETA_SENTINEL", prompt)
+            if "## Final response" in prompt:
+                return json.dumps({"action": "create", "doc": "", "area": "public API",
+                                   "scope": "cross_cutting"})
             return response
 
         result = engine.run_update(
@@ -645,7 +698,11 @@ class HardeningTest(unittest.TestCase):
         result = engine.run_update(
             self.root,
             engine.UpdateRequest(source_commit=head, rev_range=f"{head}^..{head}"),
-            config.Config(onboarded=True), FakeRuntime(response),
+            config.Config(onboarded=True), FakeRuntime([
+                json.dumps({"action": "doc", "doc": "docs/api.md", "area": "backend API",
+                            "scope": "area"}),
+                response,
+            ]),
         )
         self.assertEqual(result.status, "committed")
         self.assertNotIn("src/api.py", (self.root / "docs/api.md").read_text())
@@ -734,6 +791,8 @@ class HardeningTest(unittest.TestCase):
         self.assertNotIn("li.innerHTML = `<span class=\"log-title\">${title}", app)
         self.assertIn('addEventListener("unhandledrejection"', app)
         self.assertIn("tabIndex = 0", app)
+        self.assertIn("refreshClLogs", app)
+        self.assertIn("setInterval", app)
 
 
 if __name__ == "__main__":

@@ -108,7 +108,7 @@ commits, the CLI, or the agent skill. Three tabs, plus two icons in the top righ
 - **instructions**: the repos that ran `choobi init`. Open one to edit its **SOP** (per-repo
   documentation preferences that choobi acts on) or view and regenerate its read-only
   **knowledge base** (choobi's derived map of the repo).
-- **style**: personal exceptions layered after the immutable built-in guide.
+- **style**: the complete default `style.md`, editable as a personal copy and resettable at any time.
 - **changelog**: repos, then their logs (titled by summary), then a log's full detail.
 - **book icon**: the command reference.
 - **terminal icon and footer**: show whether the Claude runtime is installed and authenticated.
@@ -131,19 +131,29 @@ CLI cannot provide Choobi's required tool-free system boundary, so it is not a V
 
 ```text
 git post-commit ─┐
-agent chat ──────┼─> scope → relevance gate → model → verify → docs commit → history
+agent chat ──────┼─> scope → full-doc ownership → one-doc edit → verify → docs commit → history
 manual / CLI ────┘
 ```
 
-- **Relevance gate** (deterministic, no model call): if nothing is linked to the change and
-  no new source appeared, choobi records a cheap no-op and stops.
-- **Linkage** finds the docs a change concerns, cheapest first: `covers:` front matter,
-  README directory ownership, and literal path mentions.
-- **Recall backbone** catches what linkage misses. New source files (added in the commit, or
-  drifted since the last snapshot) that no doc owns are surfaced to the model as create
-  candidates. If nothing is linked but source changed, one bounded model pass picks the
-  owning doc, or create, or none. After writing, choobi records the code a doc now covers in
-  its `covers:` front matter, so next time linkage finds it without a model pass.
+- **Full-context ownership review** runs for every nontrivial implementation, UI, configuration,
+  or other non-document commit. The model receives the complete diff, current changed-file
+  snapshots, repository SOP, and every Git-tracked Markdown/MDX document in full. `covers:`, README
+  directory ownership, and literal path mentions are inexpensive hints; they never bypass review.
+- **Repo-specific areas** are inferred from each repository rather than imposed globally. Choobi
+  groups the change conceptually into areas such as backend, frontend UI, operations, or whatever
+  fits that repo, and marks feature-wide changes as cross-cutting so they can select a broader
+  owner.
+- **Complete-document batching** preserves context when everything does not fit one call. Choobi
+  splits whole documents into bounded batches, asks each batch for possible owners, and makes a
+  final selection over the shortlisted documents in full. It never truncates or splits a document.
+- **Read and write boundaries stay distinct**: every tracked Markdown/MDX file participates in
+  ownership review, but only allowlisted documents are writable. A selected read-only or generated
+  true owner becomes a visible `documentation_gap`; Choobi does not silently substitute a weaker
+  README. Tests, docs-only changes, lockfiles, and recognized generated output retain a narrow
+  deterministic skip.
+- **Recall backbone** also surfaces new source files (added in the commit, or drifted since the
+  last snapshot) that no document owns. After writing, Choobi records the changed inputs a doc now
+  covers in front matter as a useful hint for later reviews.
 - **Write boundary** (the verifier): the output path must be in the allowlist, inline relative
   links must resolve inside the repository, `covers:` entries must match tracked files, existing
   front matter and live coverage must survive an update, prompt inputs and output are
@@ -163,7 +173,7 @@ Everything lives under `~/.choobi` (override with `CHOOBI_HOME`):
 ```text
 ~/.choobi/
   config.json            name, runtime, mode, and onboarding state
-  style.md               personal exceptions appended after the built-in baseline
+  style.md               complete personal style guide (defaults to the bundled copy)
   choobi.db              SQLite: activity records, checkpoints, and the repo registry
   repos/<checkout-id>/
     sop.md               per-repo documentation preferences (editable; choobi acts on it)

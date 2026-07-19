@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from choobi import baseline, config, docs, engine, evaluate, gitio, history, repos, status, views
 from choobi.engine import UpdateRequest, run_update, _parse_disposition
@@ -84,6 +85,30 @@ class ChoobiTest(unittest.TestCase):
         (self.root / "config.md").write_text("x")  # not committed; test ownership only
         self.assertIn("README.md", docs.candidate_docs(self.root, ["setup.sh"], pol))
 
+    def test_tracked_document_inventory_includes_full_read_only_and_generated_docs(self) -> None:
+        (self.root / "CONTRIBUTING.md").write_text("# Contributing\n\nread-only owner body\n")
+        (self.root / "docs" / "generated.mdx").write_text(
+            "<!-- GENERATED DOCUMENT. DO NOT EDIT. -->\n# Generated\n\nfull body\n"
+        )
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "add docs")
+        inventory = {record.path: record for record in
+                     docs.tracked_documents(self.root, baseline.policy())}
+        self.assertFalse(inventory["CONTRIBUTING.md"].writable)
+        self.assertIn("read-only owner body", inventory["CONTRIBUTING.md"].content)
+        self.assertTrue(inventory["docs/generated.mdx"].writable)
+        self.assertTrue(inventory["docs/generated.mdx"].generated)
+
+    def test_unlinked_change_gate_has_skip_semantic_and_priority_tiers(self) -> None:
+        self.assertEqual(engine._linkage_tier(["tests/test_api.py"], "+ assert True")[0], "skip")
+        self.assertEqual(engine._linkage_tier(["src/panel.css"], "+ color: black")[0],
+                         "semantic")
+        tier, paths, signals = engine._linkage_tier(
+            ["config/product.conf"], "+ terminal_retention_days = 5"
+        )
+        self.assertEqual(tier, "priority")
+        self.assertEqual(paths, ["config/product.conf"])
+        self.assertIn("data retention", signals)
+
     def test_resolve_target(self) -> None:
         pol = baseline.policy()
         self.assertEqual(docs.resolve_target(self.root, "docs/api.md", pol), "docs/api.md")
@@ -107,6 +132,15 @@ class ChoobiTest(unittest.TestCase):
 
     # --- engine happy paths ---
     def _run(self, req: UpdateRequest, resp: str) -> engine.UpdateResult:
+        if not req.targets and isinstance(resp, str):
+            try:
+                parsed = json.loads(resp)
+            except json.JSONDecodeError:
+                parsed = {}
+            if "disposition" in parsed:
+                owner = parsed.get("target") or "docs/api.md"
+                resp = [json.dumps({"action": "doc", "doc": owner, "area": "backend",
+                                    "scope": "area"}), resp]
         return run_update(self.root, req, self.cfg, FakeRuntime(resp))
 
     def test_update_reuses_source_message(self) -> None:
@@ -133,12 +167,11 @@ class ChoobiTest(unittest.TestCase):
         self.assertEqual(r.status, "no_op")
 
     def test_no_candidates_no_model_call(self) -> None:
-        # A change touching only non-source files (nothing documentable, no doc linked, no new
-        # source surface) skips the model entirely (the cheap gate, §5.4/§6).
-        (self.root / "config").mkdir()
-        (self.root / "config" / "settings.txt").write_text("v1\n")
+        # Test-only commits remain the narrow deterministic skip boundary.
+        (self.root / "tests").mkdir()
+        (self.root / "tests" / "notes.txt").write_text("v1\n")
         _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "add settings")
-        (self.root / "config" / "settings.txt").write_text("v2\n")
+        (self.root / "tests" / "notes.txt").write_text("v2\n")
         _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "bump settings")
         h = gitio.resolve(self.root, "HEAD")
         rt = FakeRuntime("SHOULD NOT BE CALLED")
@@ -146,6 +179,113 @@ class ChoobiTest(unittest.TestCase):
                                                 trigger="post_commit"), self.cfg, rt)
         self.assertEqual(r.status, "no_op")
         self.assertIsNone(rt.last_prompt)
+
+    def test_semantic_linkage_none_is_distinct_from_gate_skip(self) -> None:
+        (self.root / "src" / "worker.py").write_text("def helper(): return 1\n")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "add helper")
+        head = gitio.resolve(self.root, "HEAD")
+        rt = FakeRuntime(json.dumps({"action": "none", "doc": "", "area": "backend",
+                                     "scope": "area"}))
+        result = run_update(
+            self.root,
+            UpdateRequest(source_commit=head, rev_range=f"{head}^..{head}",
+                          trigger="post_commit"),
+            self.cfg, rt,
+        )
+        self.assertEqual(result.reason, "model_linkage_none_semantic")
+        self.assertIn("semantic review", rt.last_prompt)
+
+    def test_priority_linkage_sees_sop_and_document_outlines(self) -> None:
+        (self.root / "README.md").write_text(
+            "# demo\n\n## What it does\n\nA tool.\n\n## How to change settings\n\nSettings.\n"
+        )
+        (self.root / "src" / "retention.py").write_text(
+            "terminal_retention_days = 5\n\ndef delete_expired(entries):\n    return entries\n"
+        )
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm",
+             "make retention configurable")
+        head = gitio.resolve(self.root, "HEAD")
+        responses = [
+            json.dumps({"action": "doc", "doc": "README.md", "area": "terminal lifecycle",
+                        "scope": "cross_cutting"}),
+            json.dumps({
+                "disposition": "update", "target": "README.md",
+                "summary": "documented configurable retention",
+                "content": ("# demo\n\n## What it does\n\nA tool.\n\n"
+                            "## How to change settings\n\n"
+                            "Terminal retention is configurable and defaults to five days.\n"),
+                "source_paths": ["src/retention.py"],
+            }),
+        ]
+        prompts = []
+
+        def answer(prompt: str) -> str:
+            prompts.append(prompt)
+            return responses.pop(0)
+
+        result = run_update(
+            self.root,
+            UpdateRequest(source_commit=head, rev_range=f"{head}^..{head}",
+                          trigger="post_commit"),
+            self.cfg, FakeRuntime(answer),
+        )
+        self.assertEqual(result.status, "committed")
+        self.assertIn("priority review", prompts[0])
+        self.assertIn("data retention", prompts[0])
+        self.assertIn("Always surface for documentation review", prompts[0])
+        self.assertIn("How to change settings", prompts[0])
+        self.assertIn("# API", prompts[0])
+        self.assertIn('"writable":true', prompts[0])
+        self.assertIn("repository-specific area: terminal lifecycle", prompts[1])
+        self.assertIn("scope: cross_cutting", prompts[1])
+        self.assertIn("five days", (self.root / "README.md").read_text())
+
+    def test_full_document_linkage_batches_then_arbitrates_shortlist(self) -> None:
+        records = [
+            docs.TrackedDocument(f"docs/{name}.md", f"# {name}\n\n" + name * 1200,
+                                 True, False)
+            for name in "abcd"
+        ]
+        prompts = []
+
+        def answer(prompt: str) -> str:
+            prompts.append(prompt)
+            if "## Batch response" in prompt:
+                candidates = ["docs/a.md"] if '"path":"docs/a.md"' in prompt else []
+                return json.dumps({"area": "backend", "scope": "area",
+                                   "candidates": candidates, "create": False})
+            return json.dumps({"action": "doc", "doc": "docs/a.md", "area": "backend",
+                               "scope": "area"})
+
+        with mock.patch.object(engine, "MAX_PROMPT_BYTES", 4500):
+            decision = engine._llm_linkage(
+                "+ feature = true", records, baseline.policy(), FakeRuntime(answer),
+                sop_body="SOP", changed_inputs=["src/a.py"],
+            )
+        self.assertEqual(decision.doc, "docs/a.md")
+        self.assertGreaterEqual(len(prompts), 3)  # bounded batches, then final arbitration
+        self.assertTrue(all("## Batch response" in prompt for prompt in prompts[:-1]))
+        self.assertTrue(any("b" * 1200 in prompt for prompt in prompts))
+        self.assertTrue(any("d" * 1200 in prompt for prompt in prompts))
+        self.assertIn("Prior batch classifications", prompts[-1])
+        self.assertIn("a" * 1200, prompts[-1])
+        self.assertNotIn("c" * 1200, prompts[-1])
+
+    def test_read_only_true_owner_surfaces_documentation_gap(self) -> None:
+        (self.root / "CONTRIBUTING.md").write_text("# Contributor workflow\n\nRun workers.\n")
+        (self.root / "src" / "worker.py").write_text("def run(): return 'new workflow'\n")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "change worker flow")
+        head = gitio.resolve(self.root, "HEAD")
+        response = json.dumps({"action": "doc", "doc": "CONTRIBUTING.md",
+                               "area": "developer workflow", "scope": "area"})
+        result = run_update(
+            self.root,
+            UpdateRequest(source_commit=head, rev_range=f"{head}^..{head}"),
+            self.cfg, FakeRuntime(response),
+        )
+        self.assertEqual((result.status, result.reason), ("gap", "documentation_gap"))
+        self.assertIn("CONTRIBUTING.md", result.summary)
+        self.assertIn("read-only", result.summary)
 
     def test_detached_generates_message(self) -> None:
         r = self._run(UpdateRequest(targets=["docs/api.md"], detached=True,

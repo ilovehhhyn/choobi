@@ -23,23 +23,26 @@ body {
 }
 
 /* --- onboarding --- */
-.center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; }
-.onboard-inner { max-width: 320px; width: 100%; }
+.center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; margin: auto; }
+.onboard-inner { max-width: 320px; width: min(320px, calc(100vw - 48px)); min-width: 260px; }
 .onboard-title { font-size: 13px; letter-spacing: 1px; }
 label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; width: 100%; }
 input, select, textarea {
   border: 1px solid #000; padding: 5px 7px; font-family: inherit; font-size: 12px; background: #fff;
 }
+select { width: 100%; }
 textarea { resize: vertical; }
 button {
   background: #fff; color: #000; border: 1px solid #000; padding: 5px 10px;
   font-family: inherit; font-size: 12px; cursor: pointer;
 }
 button:hover { background: #000; color: #fff; }
+button:disabled { cursor: wait; opacity: 0.5; background: #fff; color: #000; }
+#ob-save { margin-top: 2px; }
 #ob-error, #up-result { font-size: 11px; min-height: 16px; margin-top: 6px; white-space: pre-wrap; }
 
 /* --- home --- */
-header { padding: 14px 12px 8px; border-bottom: 1px dashed #000; text-align: center; }
+header { padding: 14px 12px 8px; border-bottom: 1px solid #000; text-align: center; }
 header .blob { margin: 0 auto 6px; }
 .title { font-weight: 700; letter-spacing: 2px; }
 .sub { font-size: 11px; opacity: 0.6; }
@@ -75,6 +78,7 @@ li.clickable:focus { outline: 1px solid #000; outline-offset: -1px; }
 }
 .icon:hover { background: #000; color: #fff; }
 .icon svg { display: block; }
+#commands-list { clear: both; }
 #commands-list li::before { content: "›"; position: absolute; left: 0; }
 #commands-list .cmd { font-weight: 700; }
 #commands-list .desc { opacity: 0.7; }
@@ -85,11 +89,15 @@ li.clickable:focus { outline: 1px solid #000; outline-offset: -1px; }
 .detail-path { font-weight: 700; margin-bottom: 10px; }
 .panel label { margin-bottom: 8px; }
 .back { margin-bottom: 8px; }
+.close-panel {
+  width: 22px; height: 22px; padding: 0; margin: 0 0 6px auto; display: block;
+  font-size: 15px; line-height: 18px;
+}
 #up-run { width: 100%; margin-top: 6px; }
 #style-editor { width: 100%; font-size: 11px; line-height: 1.4; }
+.md-file { font-weight: 700; margin-bottom: 3px; }
 .style-actions { display: flex; gap: 8px; margin-top: 8px; }
 #style-state { margin-bottom: 6px; }
 #style-result { margin-top: 6px; }
-footer { border-top: 1px dashed #000; padding: 6px 10px; font-size: 11px; opacity: 0.7; }
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-thumb { background: #000; }
