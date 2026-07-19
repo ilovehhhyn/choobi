@@ -4,9 +4,10 @@
 > describe the current code. Other v1 statements are release requirements, not claims of
 > completion.
 
-The current build has the one-document engine, deterministic linkage, one bounded semantic-linkage
-pass, a tool-free Claude runtime with native schemas, secret and write-boundary checks, isolated
-writes, local history, a configuration UI, the agent skill, and accurate PR annotation.
+The current build has the one-document engine, a full-context document-ownership pass with
+complete-document batching, a tool-free Claude runtime with native schemas, secret and
+write-boundary checks, isolated writes, local history, a configuration UI, the agent skill, and
+accurate PR annotation.
 It does not yet have a durable event queue, ordered crash recovery, completion notifications,
 multi-document reconciliation, runtime token accounting, or a historical-repository benchmark.
 Those are explicit release gaps. V2 remains the shared repository direction in §12.
@@ -63,9 +64,10 @@ background job was running.
 
 ### 2.3 Staying quiet is part of correctness
 
-Most commits do not require documentation changes. A cheap deterministic filter runs before any
-LLM call. Choobi only invokes the documentation agent when the changed code or chat context has a
-credible relationship to an existing document or satisfies the strict new-document policy.
+Most commits do not require documentation edits, but determining that from code alone is a semantic
+judgment. Choobi runs a full ownership review for every nontrivial implementation, UI,
+configuration, or other non-document commit. Only tests/docs-only changes, lockfiles, and recognized
+generated output stop at the narrow deterministic boundary.
 
 ### 2.4 Policy, style, and knowledge are separate
 
@@ -97,7 +99,7 @@ human git commit
   -> post-commit hook launches choobi for the source commit
   -> process waits on the per-repository lock
   -> runner reads the committed diff
-  -> deterministic relevance filter finds candidate docs
+  -> full-context ownership review selects an existing owner, create, or none
   -> documentation agent produces a surgical patch
   -> verifier enforces deterministic path, evidence, and concurrency invariants
   -> choobi creates a docs-only follow-up commit
@@ -330,35 +332,62 @@ All three update paths call the same engine.
 - source commit and revision range when commit-anchored, plus the head observed at run start;
 - committed, staged, or working-tree diff and changed paths;
 - active-chat context when explicitly invoked;
-- candidate existing documents and SOP-declared `create_roots`;
-- content hashes for every existing candidate;
+- every Git-tracked Markdown/MDX document in full, labeled writable/read-only and generated/manual;
+- cheap ownership hints and SOP-declared `create_roots`;
+- content hashes for the selected writable document;
 - effective documentation policy, repository SOP, and resolved style guide.
 
 ### 5.2 Code-to-document linkage
 
-Choobi discovers candidate documents using the cheapest available evidence:
+Choobi collects cheap ownership hints using:
 
 1. optional `covers:` front matter;
 2. README ownership of its immediate directory (non-recursive, so a root README is not a
    candidate for every change in the tree);
 3. literal path mentions in the document.
 
-`covers:` is an optimization and an editable declaration, not truth. The verified source tree and
+`covers:` is an optimization and an editable declaration, not truth. A cheap match never bypasses
+semantic ownership review. The verified source tree, complete diff, full tracked documents, and
 the evidence attached to a specific update are authoritative.
 
-**Recall backbone (as built).** The cheap linkage above only finds documents already tied to a
-change, so it misses new or unlinked code. Three mechanisms close that gap:
+**Full-context ownership (as built).** Every nontrivial implementation, UI, configuration, or other
+non-document commit receives an LLM ownership pass. The pass gets the complete diff, complete
+current snapshots of live changed inputs, the complete repository SOP, and every Git-tracked
+Markdown/MDX document in full. The model:
+
+- infers repository-specific document/code areas such as backend, frontend UI, operations, or a
+  taxonomy better suited to that repository;
+- marks the change `area` when it is local to one area or `cross_cutting` when it spans areas or
+  represents a feature end to end;
+- selects one true existing owner, reports that a new owner is needed, or decides no documented
+  reader need changed.
+
+Read scope and write scope are deliberately different. Every tracked Markdown/MDX file is readable
+evidence, including arbitrary root docs and generated references. Only documents matched by the
+immutable allowlist are writable. If the true owner selected by the model is read-only or generated,
+Choobi records `documentation_gap`; it does not silently substitute a weaker writable document.
+
+**Bounded complete-document batching.** If the diff, SOP, changed inputs, and all complete documents
+fit under the prompt ceiling, Choobi makes one ownership call. Otherwise it:
+
+1. splits complete documents into bounded batches without truncating or splitting any document;
+2. asks each batch for up to three possible owners plus its area and scope classification;
+3. sends every shortlisted document in full, with the batch classifications, to one final selection
+   call; and
+4. sends the chosen writable document in full to the editing call.
+
+If a single complete document cannot fit in a batch, or all shortlisted documents cannot fit in the
+final selection together, Choobi fails with `context_too_large` rather than discard evidence.
+
+**Recall backbone.** Full ownership review is supplemented by two persistent mechanisms:
 
 - **New-surface detection.** Source files added in the commit, or drifted since a persisted
   per-repo snapshot of reconciled source, that no document owns are surfaced to the model as
   create candidates. The snapshot makes recall robust to commits the hook missed. The first run
   in a repo establishes the baseline snapshot without flooding the model.
-- **Gated linkage pass.** When nothing is linked but source changed, choobi makes one bounded
-  model call over a compact index of every document (path, first heading, `covers:`) to pick the
-  owning document, or create, or none. This catches the semantic tail deterministic rules miss.
 - **Self-reinforcing `covers:`.** After a successful write, choobi records the source files the
-  document now covers in its front matter, so the next change links deterministically without the
-  gated pass. Recall compounds and cost drops over time.
+  document now covers in its front matter, improving later ownership hints without skipping the
+  full review.
 
 Symbol-level linkage and embeddings remain out of scope for v1.
 
@@ -389,23 +418,26 @@ records `documentation_gap` and creates nothing.
 
 ### 5.4 Relevance gate
 
-The deterministic gate stops changes with no linked documentation and no new source surface. For a
-linked candidate, the bounded model disposition handles semantic cases such as formatting, renamed
-locals, generated documents, and internal refactors. If no candidate or allowed new-document
-placement survives, choobi records a cheap no-op and makes no model call.
+The deterministic gate is intentionally narrow: tests/docs-only changes, lockfiles, and recognized
+generated output may stop without a model. Every other changed input receives full-context
+ownership judgment. Priority signals—retention, deletion, privacy, authentication, permissions,
+credentials, telemetry, security, and user-visible configuration—are included in the prompt and
+SOP so the model treats them with extra care, but they do not change how much documentation context
+is supplied. A linkage-model `none` is recorded distinctly from `no_candidate_docs`, so history
+shows whether the narrow gate or the model made the decision.
 
-The LLM disposition receives the complete cross-file diff, candidate documents, structured
-placement roots, chat decisions, and style/SOP context. The combined prompt has one hard byte
-ceiling and fails rather than dropping evidence. The runtime returns one native schema-constrained
-object and cannot use tools.
+After ownership selection, the editing disposition receives the complete cross-file diff, the one
+chosen document in full, structured placement roots, changed-file evidence, chat decisions, and
+style/SOP context. Each prompt has one hard byte ceiling and fails rather than dropping evidence.
+The runtime returns one native schema-constrained object and cannot use tools.
 
 ### 5.5 Surgical edit
 
 Choobi edits the smallest relevant section. It does not rewrite an entire document to update one
 fact. Updating an existing owner document is preferred over creating a new file.
 
-As built, the model returns the full updated content of one document, and choobi writes that
-content. "Surgical" is enforced two ways: the prompt instructs the smallest edit, and the verifier
+As built, the editing model receives and returns the full content of the one selected document.
+"Surgical" is enforced two ways: the prompt instructs the smallest edit, and the verifier
 rejects an update that drops more than one existing section (measured by markdown headings), which
 catches a wholesale rewrite while still allowing a single heading rename such as a changed
 signature.
@@ -437,11 +469,13 @@ tree, and executing existing commands or examples through a repository-declared 
 
 ## 6. Token and latency budget
 
-Every commit triggers choobi, but every commit must not trigger an expensive agent run.
+Every nontrivial commit intentionally pays for a full-context ownership judgment. Recall and correct
+ownership take priority over minimizing linkage tokens.
 
-**As built**, deterministic linkage runs before generation and semantic linkage is at most one extra
-call. Choobi sends complete evidence up to one prompt ceiling, then fails instead of truncating a
-block. Per-repository locking prevents concurrent writers. The fixture evaluation reports decision
+**As built**, Choobi makes one ownership call when all evidence fits. Larger repositories use one
+call per intact-document batch plus a final full-document shortlist selection; an edit adds one more
+call. Choobi fails instead of truncating a diff, SOP, changed file, document, or editing target.
+Per-repository locking prevents concurrent writers. The fixture evaluation reports decision
 accuracy, write precision, recall, silence, required-fact recall, preservation, changed-line
 ceilings, and a finite set of forbidden-claim probes.
 
@@ -469,7 +503,7 @@ there is no declarative rules file that appears enforceable but is never read.
 Installed baseline files are never edited in place, so application upgrades cannot overwrite a
 user's preferences.
 
-### 7.2 Personal override
+### 7.2 Personal style copy
 
 The user edits a personal guide at:
 
@@ -477,8 +511,9 @@ The user edits a personal guide at:
 ~/.choobi/style.md
 ```
 
-The UI edits only personal overrides and states that the immutable baseline remains active. The
-resolved prompt appends those overrides after the baseline. The personal guide may configure:
+The UI initially shows the complete bundled `style.md`. Saving creates a complete personal copy;
+returning to default removes that copy and reloads the bundled document. The resolved prompt uses
+the personal copy when present and otherwise uses the baseline. The personal guide may configure:
 
 - voice, tone, and verbosity;
 - preferred and banned terminology;

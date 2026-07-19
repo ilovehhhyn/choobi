@@ -1,7 +1,7 @@
-"""Load the immutable baseline policy and resolve the baseline plus personal style.
+"""Load the immutable baseline policy and resolve the editable personal style.
 
-Baseline files ship with the package and are never edited in place. Personal style
-layers on top: resolved style = baseline plus optional overrides (build-plan §7.1–7.2).
+Baseline files ship with the package and are never edited in place. A personal style file is a
+complete editable copy; when it is absent, the bundled baseline is the resolved style.
 """
 from __future__ import annotations
 
@@ -27,9 +27,9 @@ def baseline_style() -> str:
 
 
 def resolved_style() -> str:
-    """The baseline plus any personal writing overrides."""
+    """The complete personal style document, or the bundled baseline by default."""
     default = baseline_style()
     p = config.personal_style_path()
     if p.exists() and p.read_text().strip():
-        return default.rstrip() + "\n\n## Personal overrides\n\n" + p.read_text().strip() + "\n"
+        return p.read_text()
     return default

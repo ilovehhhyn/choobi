@@ -84,7 +84,18 @@ def _create(path: str, content: str, *source_paths: str) -> str:
 
 def _link(path: str) -> str:
     import json
-    return json.dumps({"action": "doc", "doc": path})
+    return json.dumps({"action": "doc", "doc": path, "area": "feature",
+                       "scope": "area"})
+
+
+def _link_create(area: str = "feature", scope: str = "area") -> str:
+    import json
+    return json.dumps({"action": "create", "doc": "", "area": area, "scope": scope})
+
+
+def _link_none(area: str = "internal", scope: str = "area") -> str:
+    import json
+    return json.dumps({"action": "none", "doc": "", "area": area, "scope": scope})
 
 
 # --- realistic, unambiguously doc-worthy scenarios ---
@@ -112,6 +123,13 @@ _RATELIMIT_CODE = (
 )
 _RATELIMIT_DOC = ("# Rate limiter\n\n`allow(key, limit, window)` returns True while `key` is under "
                   "`limit` requests per `window` seconds.\n")
+_RETENTION_README = ("# Terminal helper\n\n## What it does\n\nTracks coding sessions.\n\n"
+                     "## Settings\n\nSettings are stored in `config.json`.\n")
+_RETENTION_README_UPDATED = (
+    "# Terminal helper\n\n## What it does\n\nTracks coding sessions.\n\n"
+    "## Settings\n\nSet `terminal_retention_days` in `config.json`; it defaults to 5 days. "
+    "Cleanup removes session-list entries, not the underlying transcript files.\n"
+)
 
 
 def _f_update(root: Path) -> None:
@@ -171,6 +189,28 @@ def _f_required_env(root: Path) -> None:
     })
     _edit(root, "src/config.py", 'import os\nTOKEN = os.environ["SERVICE_TOKEN"]\n',
           "require service token")
+
+
+def _f_configurable_retention(root: Path) -> None:
+    _init(root, {
+        "README.md": _RETENTION_README,
+        "src/config.rs": "pub const RETENTION_DAYS: u64 = 5;\n",
+        "src/manager.js": "export const retentionDays = 5;\n",
+        "src/session_store.rs": "pub fn load_entries() { /* load metadata only */ }\n",
+    })
+    (root / "src/config.rs").write_text(
+        "pub struct Config { pub terminal_retention_days: u64 }\n"
+        "pub const DEFAULT_TERMINAL_RETENTION_DAYS: u64 = 5;\n"
+    )
+    (root / "src/manager.js").write_text(
+        "export const saveRetention = (days) => invoke('set_terminal_retention_days', { days });\n"
+    )
+    (root / "src/session_store.rs").write_text(
+        "// Removes only session-list metadata; underlying transcript files are never deleted.\n"
+        "pub fn prune_unused_metadata(retention_days: u64) { /* retain recent entries */ }\n"
+    )
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "make terminal retention configurable")
 
 
 def _f_error_contract(root: Path) -> None:
@@ -253,14 +293,17 @@ def _f_remove_public_api(root: Path) -> None:
 
 FIXTURES: List[Fixture] = [
     Fixture("update_documented_api", _f_update, "update:docs/reference/cache.md",
-            _upd("docs/reference/cache.md", _CACHE_DOC_UPDATED, "src/cache.py"),
+            [_link("docs/reference/cache.md"),
+             _upd("docs/reference/cache.md", _CACHE_DOC_UPDATED, "src/cache.py")],
             required=("ttl", "300"),
             preserved=("## get(key)\nReturns the cached value for `key`, or `None`.",),
             max_changed_lines=4),
-    Fixture("silent_refactor", _f_silent_refactor, "silent", _silent()),
+    Fixture("silent_refactor", _f_silent_refactor, "silent",
+            [_link("docs/reference/cache.md"), _silent()]),
     Fixture("silent_test_only", _f_silent_test, "silent", _silent()),
     Fixture("create_new_feature", _f_create, "create",
-            _create("docs/internal/features/ratelimit.md", _RATELIMIT_DOC, "src/ratelimit.py"),
+            [_link_create(),
+             _create("docs/internal/features/ratelimit.md", _RATELIMIT_DOC, "src/ratelimit.py")],
             allow_create=True, required=("allow(", "limit", "window"),
             forbidden=("TooManyRequests", "user_id", "client IP", "`str`",
                        "handle_request", "reject_request", "from ratelimit import")),
@@ -270,36 +313,50 @@ FIXTURES: List[Fixture] = [
              _upd("docs/features/login.md", _LOGIN_DOC_UPDATED, "src/auth.py")],
             required=("7 days",)),
     Fixture("update_cli_flag", _f_cli_flag, "update:docs/reference/cli.md",
-            _upd("docs/reference/cli.md",
-                 "---\ncovers: src/cli.py\n---\n# CLI\n\n```bash\ntool --format json\n```\n"
-                 "The default format is `text`.\n", "src/cli.py"),
+            [_link("docs/reference/cli.md"),
+             _upd("docs/reference/cli.md",
+                  "---\ncovers: src/cli.py\n---\n# CLI\n\n```bash\ntool --format json\n```\n"
+                  "The default format is `text`.\n", "src/cli.py")],
             required=("tool --format json", "text"), forbidden=("tool --json",)),
     Fixture("update_required_env", _f_required_env, "update:README.md",
-            _upd("README.md",
-                 "---\ncovers: src/config.py\n---\n# Service\n\nSet the required `SERVICE_TOKEN` "
-                 "environment variable before starting the service.\n", "src/config.py"),
+            [_link("README.md"),
+             _upd("README.md",
+                  "---\ncovers: src/config.py\n---\n# Service\n\nSet the required `SERVICE_TOKEN` "
+                  "environment variable before starting the service.\n", "src/config.py")],
             required=("SERVICE_TOKEN", "environment variable")),
+    Fixture("update_configurable_retention", _f_configurable_retention, "update:README.md",
+            [_link("README.md"),
+             _upd("README.md", _RETENTION_README_UPDATED,
+                  "src/config.rs", "src/manager.js", "src/session_store.rs")],
+            required=("terminal_retention_days", "5", "transcript"),
+            preserved=("## What it does\n\nTracks coding sessions.",),
+            max_changed_lines=20),
     Fixture("update_error_contract", _f_error_contract, "update:docs/reference/client.md",
-            _upd("docs/reference/client.md",
-                 "---\ncovers: src/client.py\n---\n# Client\n\n`send()` raises `RateLimitError` "
-                 "with `retry_after=30` for a 429 response.\n", "src/client.py"),
+            [_link("docs/reference/client.md"),
+             _upd("docs/reference/client.md",
+                  "---\ncovers: src/client.py\n---\n# Client\n\n`send()` raises `RateLimitError` "
+                  "with `retry_after=30` for a 429 response.\n", "src/client.py")],
             required=("RateLimitError", "retry_after", "30")),
     Fixture("update_frontend_workflow", _f_frontend_workflow,
             "update:docs/features/settings.md",
-            _upd("docs/features/settings.md",
-                 "---\ncovers: web/settings.js\n---\n# Settings\n\nVerify your email before "
-                 "saving your profile.\n", "web/settings.js"),
+            [_link("docs/features/settings.md"),
+             _upd("docs/features/settings.md",
+                  "---\ncovers: web/settings.js\n---\n# Settings\n\nVerify your email before "
+                  "saving your profile.\n", "web/settings.js")],
             required=("Verify", "email", "saving")),
-    Fixture("silent_feature_gated", _f_feature_gated, "silent", _silent(),
+    Fixture("silent_feature_gated", _f_feature_gated, "silent", _link_none(),
             allow_create=True),
-    Fixture("silent_restored_behavior", _f_restore_documented_behavior, "silent", _silent()),
-    Fixture("silent_docs_already_updated", _f_docs_already_updated, "silent", _silent()),
-    Fixture("silent_generated_document", _f_generated_document, "silent", _silent(),
+    Fixture("silent_restored_behavior", _f_restore_documented_behavior, "silent",
+            [_link("docs/reference/parser.md"), _silent()]),
+    Fixture("silent_docs_already_updated", _f_docs_already_updated, "silent",
+            [_link("docs/api.md"), _silent()]),
+    Fixture("silent_generated_document", _f_generated_document, "silent", _link_none(),
             allow_create=True),
     Fixture("remove_public_api", _f_remove_public_api, "update:docs/reference/exports.md",
-            _upd("docs/reference/exports.md",
-                 "---\ncovers: src/exports.py\n---\n# Exports\n\n"
-                 "## keep()\nReturns the stable value.\n", "src/exports.py"),
+            [_link("docs/reference/exports.md"),
+             _upd("docs/reference/exports.md",
+                  "---\ncovers: src/exports.py\n---\n# Exports\n\n"
+                  "## keep()\nReturns the stable value.\n", "src/exports.py")],
             required=("keep()", "stable value"), forbidden=("legacy()", "legacy value"),
             max_changed_lines=4),
 ]

@@ -12,8 +12,12 @@
       <img class="blob choobi-face" alt="choobi" />
       <div class="onboard-title">before we start</div>
       <label>your name<input id="ob-name" type="text" placeholder="helen" autocomplete="off" /></label>
-      <div>runtime&nbsp;&nbsp;claude (tool-free)</div>
-      <button id="ob-save">start</button>
+      <label>runtime
+        <select id="ob-runtime" aria-label="runtime">
+          <option value="claude">claude (tool-free)</option>
+        </select>
+      </label>
+      <button id="ob-save">sign in with claude</button>
       <div id="ob-error"></div>
     </div>
   </div>
@@ -40,7 +44,6 @@
     <header>
       <img class="blob choobi-face" id="home-blob" alt="" aria-hidden="true" />
       <div class="title">choobi</div>
-      <div class="sub" id="home-sub">docs that follow the work</div>
     </header>
     <nav>
       <button data-panel="instructions" class="active">instructions</button>
@@ -51,7 +54,7 @@
       <!-- INSTRUCTIONS: repos -> [SOP | knowledge base] -->
       <section id="panel-instructions" class="panel">
         <div id="instr-repos" class="subview">
-          <div class="hint">repos that have run choobi init</div>
+          <div class="hint">edit choobi's sop for each repo</div>
           <ul id="instr-repo-list"><li class="empty">// loading…</li></ul>
         </div>
         <div id="instr-detail" class="subview hidden">
@@ -83,9 +86,9 @@
 
       <!-- STYLE -->
       <section id="panel-style" class="panel hidden">
-        <div id="style-state" class="opt"></div>
-        <textarea id="style-editor" rows="16" spellcheck="false"
-                  placeholder="personal exceptions to the built-in style"></textarea>
+        <div class="hint">edit choobi's overall style</div>
+        <div class="md-file" aria-label="active markdown file">style.md</div>
+        <textarea id="style-editor" rows="16" spellcheck="false"></textarea>
         <div class="row-actions">
           <button id="style-save">save</button>
           <button id="style-reset">return to default</button>
@@ -96,12 +99,13 @@
       <!-- CHANGELOG: repos -> logs -> detail -->
       <section id="panel-changelog" class="panel hidden">
         <div id="cl-repos" class="subview">
-          <div class="hint">repos that have run choobi init</div>
+          <div class="hint">view choobi's work</div>
           <ul id="cl-repo-list"><li class="empty">// loading…</li></ul>
         </div>
         <div id="cl-logs" class="subview hidden">
           <button class="back" data-back="cl-repos">← repos</button>
           <div class="detail-path" id="cl-repo-path"></div>
+          <div class="hint">updates automatically</div>
           <ul id="cl-log-list"></ul>
         </div>
         <div id="cl-detail" class="subview hidden">
@@ -112,11 +116,11 @@
 
       <!-- COMMANDS (opened from the book icon, not a nav tab) -->
       <section id="panel-commands" class="panel hidden">
-        <button class="back" id="commands-back">← back</button>
+        <button class="close-panel" id="commands-back" title="close commands"
+                aria-label="close commands">×</button>
         <ul id="commands-list"></ul>
       </section>
     </main>
-    <footer><span id="status" aria-live="polite">ready</span></footer>
   </div>
 
   <script src="/static/app.js"></script>

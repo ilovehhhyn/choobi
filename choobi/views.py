@@ -70,6 +70,6 @@ def render_record(r: Optional[Dict[str, Any]]) -> str:
 def render_style() -> str:
     personal = config.personal_style_path()
     active = personal.exists() and personal.read_text().strip()
-    header = (f"# resolved style — personal override ({personal})"
-              if active else "# resolved style — baseline (no personal override yet)")
+    header = (f"# resolved style — customized copy ({personal})"
+              if active else "# resolved style — bundled default")
     return header + "\n\n" + baseline.resolved_style()

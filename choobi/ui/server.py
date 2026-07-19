@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
-from .. import auth, config, gitio, help as help_mod, history, repos as repos_mod
+from .. import auth, baseline, config, gitio, help as help_mod, history, repos as repos_mod
 from ..errors import ChoobiError, RuntimeUnavailable
 
 _STATIC = Path(__file__).resolve().parent / "static"
@@ -106,7 +106,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/style":
             personal = config.personal_style_path()
             is_personal = personal.exists() and bool(personal.read_text().strip())
-            content = personal.read_text() if is_personal else ""
+            content = personal.read_text() if is_personal else baseline.baseline_style()
             return self._json({"content": content, "is_personal": is_personal})
         if path == "/api/repos":
             return self._json({"repos": history.list_repos()})
@@ -128,17 +128,28 @@ class Handler(BaseHTTPRequestHandler):
     def _post_api(self, path: str, payload: Dict[str, Any]) -> None:
         cfg = config.Config.load()
         if path == "/api/onboard":
-            if payload.get("agent", "claude") != "claude":
-                raise RuntimeUnavailable("Choobi V1 requires the tool-free Claude runtime")
-            cfg.name = payload.get("name", "").strip()
-            cfg.agent = "claude"
-            cfg.onboarded = True
+            runtime = payload.get("agent", "").strip()
+            if runtime not in auth.RUNTIMES:
+                raise RuntimeUnavailable("choose a supported tool-free runtime")
+            name = payload.get("name", "").strip()
+            cfg.name = name
+            cfg.agent = runtime
+            cfg.onboarded = False
             cfg.save()
-            return self._json({"ok": True})
+            notes = auth.ensure(runtime)
+            ready = auth.is_logged_in(runtime) is True
+            cfg = config.Config.load()
+            cfg.name = name
+            cfg.agent = runtime
+            cfg.onboarded = ready
+            cfg.save()
+            return self._json({"ok": ready, "runtime_state": "ready" if ready else
+                               "not logged in", "notes": notes})
         if path == "/api/style/save":
             p = config.personal_style_path()
             content = payload.get("content", "")
-            is_personal = bool(content.strip())
+            default = baseline.baseline_style()
+            is_personal = bool(content.strip()) and content != default
             if is_personal:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(content)
@@ -149,7 +160,8 @@ class Handler(BaseHTTPRequestHandler):
             p = config.personal_style_path()
             if p.exists():
                 p.unlink()
-            return self._json({"ok": True, "is_personal": False, "content": ""})
+            return self._json({"ok": True, "is_personal": False,
+                               "content": baseline.baseline_style()})
         if path == "/api/repo/sop/save":
             repos_mod.save_sop(payload["repo"], payload.get("content", ""))
             return self._json({"ok": True, "is_default": False})
@@ -194,6 +206,8 @@ def serve() -> None:
     except ImportError as exc:
         httpd.shutdown()
         raise RuntimeError("the native window needs pywebview — `pip install pywebview`") from exc
-    webview.create_window("choobi", url, width=380, height=560, resizable=True)
+    webview.create_window(
+        "choobi", url, width=380, height=560, min_size=(340, 480), resizable=True
+    )
     webview.start()
     httpd.shutdown()

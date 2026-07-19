@@ -110,6 +110,14 @@ When a change introduces a new feature choobi identifies, or a big shift, choobi
 2. If a relevant doc exists, it updates that doc.
 3. If none exists, it reports a documentation gap unless `allow_create` is explicitly enabled.
 
+## Repository areas and cross-cutting features
+
+Infer this repository's own code and document areas from its paths and document purposes—for
+example backend, frontend UI, operations, or categories more natural to this project. Prefer a
+document in the affected area for an area-local change. Mark a change cross-cutting when it spans
+areas or describes one feature end to end, then consider feature-wide and repository-wide owners.
+Do not force every repository into the same taxonomy.
+
 ## Suggested layout (choobi may write into these)
 
 - docs/public/features/     feature and user-journey docs
@@ -136,6 +144,21 @@ When a change introduces a new feature choobi identifies, or a big shift, choobi
 <!-- How often choobi should act and how chatty to be. For example: document on every
      relevant commit, stay silent on internal-only changes, keep completion messages to one
      line, and batch trivial changes. -->
+
+## Always surface for documentation review
+
+- data retention periods, deletion behavior, lifecycle rules, and user controls;
+- privacy boundaries, local versus remote data handling, telemetry, and data sharing;
+- authentication, credentials, permissions, and other security-sensitive workflows; and
+- user-visible configuration keys, defaults, valid ranges, and when changes take effect.
+
+Prefer the README for product-wide behavior and setup, or the canonical configuration/reference
+document when one exists. These changes must reach semantic linkage review even when the final
+decision is that existing documentation is already correct.
+
+For retention or deletion behavior, document the default period, the user control, when cleanup
+runs, the exact records or files removed, and any underlying data explicitly preserved—only when
+those facts are supported by the change evidence.
 
 ## Verification
 <!-- Repo-specific checks: safe commands choobi may run to confirm examples, links or paths

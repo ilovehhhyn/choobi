@@ -1,5 +1,5 @@
 // choobi window. Config & inspection only. Three tabs (instructions, style, changelog);
-// commands live behind the book icon; the terminal icon and footer expose runtime readiness.
+// commands live behind the book icon; the terminal icon exposes runtime readiness.
 "use strict";
 
 const TOKEN = new URLSearchParams(location.search).get("token") || "";
@@ -28,12 +28,10 @@ function showScreen(name) {
   for (const s of document.querySelectorAll(".screen")) s.classList.add("hidden");
   $("screen-" + name).classList.remove("hidden");
 }
-function setStatus(s) { $("status").textContent = s; }
 window.addEventListener("unhandledrejection", (event) => {
   event.preventDefault();
   const message = event.reason?.message || "request failed";
   $("ob-error").textContent = message;
-  setStatus(`failed: ${message}`);
 });
 function wiggle() {
   document.querySelectorAll(".blob").forEach((b) => {
@@ -130,7 +128,26 @@ async function regenKb() {
 }
 
 // ---------- CHANGELOG ----------
+let clRepo = null;
+let clFingerprint = "";
+let clPoll = null;
+
+function stopClPolling() {
+  if (clPoll) clearInterval(clPoll);
+  clPoll = null;
+}
+
+function startClPolling() {
+  stopClPolling();
+  clPoll = setInterval(() => {
+    if (activePanel === "changelog" && clRepo) refreshClLogs().catch(() => {});
+  }, 2000);
+}
+
 async function loadClRepos() {
+  stopClPolling();
+  clRepo = null;
+  clFingerprint = "";
   showSub("panel-changelog", "cl-repos");
   const { repos } = await api("/api/repos");
   const list = initedReposSorted(repos);
@@ -146,8 +163,20 @@ async function loadClRepos() {
   }
 }
 async function openClRepo(r) {
+  clRepo = r;
   $("cl-repo-path").textContent = r.path;
-  const { records } = await api("/api/repo/changelog?repo=" + encodeURIComponent(r.repo_id));
+  await refreshClLogs(true);
+  startClPolling();
+}
+async function refreshClLogs(show) {
+  if (!clRepo) return;
+  const repoId = clRepo.repo_id;
+  const { records } = await api("/api/repo/changelog?repo=" + encodeURIComponent(repoId));
+  if (!clRepo || clRepo.repo_id !== repoId) return;
+  const fingerprint = records.map((rec) =>
+    `${rec.id}:${rec.status}:${rec.ts}:${rec.summary}:${rec.reason}`).join("|");
+  if (fingerprint === clFingerprint && !show) return;
+  clFingerprint = fingerprint;
   const ul = $("cl-log-list");
   ul.innerHTML = "";
   if (!records.length) { ul.innerHTML = '<li class="empty">// empty</li>'; }
@@ -165,7 +194,7 @@ async function openClRepo(r) {
     makeClickable(li, () => openLog(rec.id));
     ul.appendChild(li);
   }
-  showSub("panel-changelog", "cl-logs");
+  if (show) showSub("panel-changelog", "cl-logs");
 }
 function renderRecord(r) {
   if (!r) return "no such entry.";
@@ -190,28 +219,20 @@ async function openLog(id) {
 }
 
 // ---------- STYLE ----------
-function styleStateLabel(isPersonal) {
-  return isPersonal
-    ? "editing personal overrides (~/.choobi/style.md); built-in rules remain active"
-    : "built-in rules are active; add only personal exceptions below";
-}
 async function loadStyle() {
   const r = await api("/api/style");
   $("style-editor").value = r.content;
-  $("style-state").textContent = styleStateLabel(r.is_personal);
   $("style-result").textContent = "";
 }
 async function saveStyle() {
-  const r = await post("/api/style/save", { content: $("style-editor").value });
-  $("style-state").textContent = styleStateLabel(r.is_personal);
+  await post("/api/style/save", { content: $("style-editor").value });
   $("style-result").textContent = "saved.";
   wiggle();
 }
 async function resetStyle() {
   const r = await post("/api/style/reset", {});
   $("style-editor").value = r.content;
-  $("style-state").textContent = styleStateLabel(r.is_personal);
-  $("style-result").textContent = "returned to the default.";
+  $("style-result").textContent = "style.md returned to the default.";
   wiggle();
 }
 
@@ -244,6 +265,7 @@ function setRuntimeTooltip(cfg) {
 document.querySelectorAll("nav button").forEach((b) => {
   b.onclick = () => {
     const p = b.dataset.panel;
+    if (p !== "changelog") stopClPolling();
     showPanel(p);
     if (p === "instructions") loadInstrRepos();
     if (p === "style") loadStyle();
@@ -251,7 +273,14 @@ document.querySelectorAll("nav button").forEach((b) => {
   };
 });
 document.querySelectorAll("[data-back]").forEach((b) => {
-  b.onclick = () => showSub(b.closest(".panel").id, b.dataset.back);
+  b.onclick = () => {
+    if (b.dataset.back === "cl-repos") {
+      stopClPolling();
+      clRepo = null;
+      clFingerprint = "";
+    }
+    showSub(b.closest(".panel").id, b.dataset.back);
+  };
 });
 $("icon-commands").onclick = () => { showPanel("commands", false); loadCommands(); };
 $("commands-back").onclick = () => showPanel(activePanel, false);
@@ -266,9 +295,21 @@ $("style-reset").onclick = resetStyle;
 $("ob-save").onclick = async () => {
   const name = $("ob-name").value.trim();
   if (!name) { $("ob-error").textContent = "name required"; return; }
-  await post("/api/onboard", { name, agent: "claude" });
-  wiggle();
-  enterHome(await api("/api/config"));
+  const agent = $("ob-runtime").value;
+  const button = $("ob-save");
+  button.disabled = true;
+  $("ob-error").textContent = `opening ${agent} sign in in your browser…`;
+  try {
+    const result = await post("/api/onboard", { name, agent });
+    if (!result.ok) {
+      $("ob-error").textContent = result.notes.join("\n");
+      return;
+    }
+    wiggle();
+    enterHome(await api("/api/config"));
+  } finally {
+    button.disabled = false;
+  }
 };
 
 function enterHome(cfg) {
@@ -276,12 +317,14 @@ function enterHome(cfg) {
   showScreen("home");
   showPanel("instructions");
   loadInstrRepos();
-  setStatus(cfg.runtime_state === "ready" ? "ready" : `runtime ${cfg.runtime_state}; run choobi auth claude`);
 }
 
 async function init() {
   const cfg = await api("/api/config");
   if (cfg.name) $("ob-name").value = cfg.name;
+  if ([...$("ob-runtime").options].some((option) => option.value === cfg.agent)) {
+    $("ob-runtime").value = cfg.agent;
+  }
   if (!cfg.onboarded) { showScreen("onboard"); return; }
   enterHome(cfg);
 }
