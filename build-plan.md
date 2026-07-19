@@ -1,9 +1,15 @@
 # choobi — Build Plan
 
-> Status: consolidated product and implementation contract. This document is the canonical
-> description of choobi v1 and the v2 team direction. The v1 interaction model is intentionally
-> small: a commit triggers choobi, an engineer can invoke choobi from an active coding-agent chat,
-> and choobi records what it changed and knows about the repository in a local UI.
+> Status: canonical product contract and implementation plan. Statements marked **as built**
+> describe the current code. Other v1 statements are release requirements, not claims of
+> completion.
+
+The current build has the one-document engine, deterministic linkage, one bounded semantic-linkage
+pass, a tool-free Claude runtime with native schemas, secret and write-boundary checks, isolated
+writes, local history, a configuration UI, the agent skill, and accurate PR annotation.
+It does not yet have a durable event queue, ordered crash recovery, completion notifications,
+multi-document reconciliation, runtime token accounting, or a historical-repository benchmark.
+Those are explicit release gaps. V2 remains the shared repository direction in §12.
 
 ---
 
@@ -83,19 +89,20 @@ databases are a team consistency system.
 
 ### 3.1 Automatic post-commit update
 
-Every human `git commit` fires the `post-commit` hook. The hook performs no inference itself. It
-records a small event and starts the background runner, then returns immediately.
+**As built**, every commit in a repository initialized with `choobi init` fires a small
+`post-commit` hook. The hook launches the engine in a detached process and returns immediately.
 
 ```text
 human git commit
-  -> post-commit hook enqueues source commit
-  -> background runner reads the committed diff
+  -> post-commit hook launches choobi for the source commit
+  -> process waits on the per-repository lock
+  -> runner reads the committed diff
   -> deterministic relevance filter finds candidate docs
   -> documentation agent produces a surgical patch
-  -> verifier checks every changed claim it can check mechanically
+  -> verifier enforces deterministic path, evidence, and concurrency invariants
   -> choobi creates a docs-only follow-up commit
   -> personal history records the result
-  -> choobi sends one completion message
+  -> hook log and personal history record the result
 ```
 
 The background job examines the committed tree, not an uncommitted approximation of the user's
@@ -123,25 +130,19 @@ choobi creates no partial commit. The failure is recorded with a typed reason an
 
 #### Concurrency contract
 
-The background runner serializes relevant source commits per repository in commit order. It may
-batch deterministic no-op filtering, but it never coalesces two relevant source commits into one
-docs commit: each successful event retains its own source mapping and exact commit message. If later
-human commits already exist, Choobi verifies the earlier event against the current head and commits
-it there without rewriting history; a conflict produces a typed failure.
+**As built**, background processes serialize through one advisory lock per repository. They do not
+coalesce events, but lock acquisition order is not a durable commit queue and a process that dies
+before entering the engine leaves no recoverable event. Ordered persistence and crash recovery are
+required before the automatic path is production-grade.
 
-Generation and verification run in an isolated temporary worktree and produce a prebuilt commit on
-a Choobi-owned pending ref; they never mutate the user's checkout. At a supported shell or
-coding-agent prompt boundary, Choobi acquires the repository lease, requires a clean index and clean
-target paths, rechecks the branch head and target hashes, then attaches the prebuilt commit with one
-guarded Git cherry-pick. Choobi never manually patches or stages the live checkout. Git's own
-local-change checks are the final write guard, and any failure aborts the cherry-pick and leaves the
-pending ref intact.
+Generation and verification produce a prebuilt commit in an isolated temporary worktree on a
+Choobi-owned pending ref. Choobi then rechecks the live checkout and attaches that commit with one
+guarded Git cherry-pick. It never manually patches or stages the live checkout. A conflict aborts
+the cherry-pick and leaves the pending ref for diagnosis.
 
-`choobi init` installs both the post-commit hook and a supported prompt integration. Automatic
-attachment is guaranteed only in those initialized environments. Commits made through an
-unsupported shell or Git GUI still enqueue analysis but remain visibly pending with
-`safe_boundary_required`. `choobi pr create` must drain all relevant pending commits or fail with
-`pending_docs_update`; it never opens a PR that falsely claims the docs were updated.
+`choobi init` installs the post-commit hook and project agent skill, and refuses to overwrite an
+unmanaged existing hook. `choobi pr create` refuses to run while an update holds the repository
+lock. Draining durable queued events and unresolved pending refs remains release work.
 
 Before attaching a pending commit, choobi checks:
 
@@ -155,9 +156,8 @@ If any invariant fails, choobi does not write or commit. It records the exact fa
 later explicit `choobi update` to run against the new state.
 
 Because a detached hook cannot safely print into a terminal after the shell prompt has returned,
-completion is delivered through an OS notification, recorded in the Activity UI, and displayed by
-the supported shell or coding-agent integration at its next safe prompt boundary. Choobi never
-writes asynchronous output into a terminal where the user may be typing.
+the current build writes to `~/.choobi/logs/hook.log` and local history. OS completion notification
+and delivery at the next prompt boundary remain release requirements.
 
 ### 3.2 Coding-agent chat update
 
@@ -165,9 +165,10 @@ While using Codex, Claude Code, or another supported coding-agent CLI, the user 
 
 > **choobi update**
 
-The harness-specific choobi integration passes the active conversation, repository root, current
-source commit, changed files, and PR metadata to the choobi CLI through a structured input contract.
-The choobi binary does not scrape private session databases or guess which chat the user meant.
+The portable harness skill distills the active conversation and passes it on standard input with
+`--chat`; explicit CLI flags carry a target and commit, range, PR, or detached scope. The command
+runs in the active repository. The choobi binary does not scrape private session databases or guess
+which chat the user meant.
 
 The chat is evidence about intent and decisions. It lets choobi update documents that cannot be
 derived from source signatures alone, including:
@@ -178,14 +179,15 @@ derived from source signatures alone, including:
 - product requirement documents; and
 - debugging or operational notes.
 
-The same linkage, surgical-edit, verification, commit, notification, and history pipeline is used.
-The adapter supplies a source commit for the update, and the generated docs commit reuses that
-commit's exact message. If there is no source commit, choobi returns a typed `source_commit_required`
-error instead of inventing a commit association.
+The same linkage, surgical-edit, verification, commit, and history pipeline is used. When the
+harness supplies a commit anchor, the generated docs commit reuses its exact message. A
+conversation-only request must name `--detached`; otherwise choobi returns a typed
+`source_commit_required` error instead of inventing a commit association.
 
-Only the active conversation is in scope. Before inference, choobi removes tool noise, excludes
-secret and ignored-file content, and retains user decisions, implementation facts, files mentioned,
-and unresolved questions. The original transcript is not persisted in the activity database.
+Only the active conversation is in scope. The harness distills user decisions, implementation
+facts, files mentioned, and unresolved questions before piping the context to Choobi. The engine
+secret-scans and bounds that context before inference. The original transcript is not persisted in
+the activity database.
 
 ### 3.3 Pull-request author flow
 
@@ -221,9 +223,9 @@ workflow.
 
 ## 4. Invocation and integrations
 
-The standalone `choobi` executable is the canonical implementation. Every other entry point — the
-post-commit hook, a coding-agent chat, a UI button — is a thin wrapper that composes the same CLI
-contract. It submits structured context; it never duplicates choobi's reasoning or editing logic.
+The standalone `choobi` executable is the canonical implementation. The post-commit hook and
+coding-agent skill are thin wrappers around the same CLI contract. The UI is configuration and
+inspection only.
 
 ### 4.1 Command surface
 
@@ -233,7 +235,7 @@ There is exactly one engine verb, `update`. Everything else is deterministic plu
 choobi                     open the local window            (alias: choobi ui)
 choobi init                install post-commit hook + project agent skill (per repo)
 choobi install             install the coding-agent skill into Claude Code and Codex (user)
-choobi auth [claude|codex] pick the runtime model and log it in (delegates to that CLI's login)
+choobi auth [claude]       select the tool-free runtime and log in through its CLI
 choobi update …            run the documentation engine     (see 4.2)
 choobi status              show pending, failed, and no-op jobs and repo checkpoints
 choobi docs                list the writable docs in this repo and what each covers
@@ -254,16 +256,17 @@ human typing at a shell — fills the same three slots; the caller differences a
 are provided*:
 
 ```text
-choobi update  [TARGET…]  [SCOPE…]  [-- INSTRUCTION]
+choobi update  [TARGET]  [SCOPE]  [-- INSTRUCTION]
 
-TARGET…       zero  → choobi infers the target docs from the diff (the automatic path)
-              one+  → the user pins the docs (repo-relative path or fuzzy name, e.g. "the api doc")
+TARGET        zero  → choobi infers one target from the diff
+              one   → the user pins one document (repo-relative path or fuzzy name)
 
-SCOPE…        where the truth comes from; supply one or more:
-                --commit <sha> | --range <a..b> | --pr <n>   (commit-anchored)
-                --chat                                        (harness-supplied conversation)
-                --staged | --working                         (uncommitted, explicit invocation only)
-                --detached                                   (instruction is the only scope)
+SCOPE         choose one commit anchor:
+                --commit <sha> | --range <a..b> | --pr <n>
+              or choose --detached, optionally with --staged or --working
+
+CONTEXT       --chat reads harness-supplied conversation evidence from stdin and may accompany
+              either scope
 
 INSTRUCTION   free-text after `--`, the natural-language "based on …" that narrows the edit
 ```
@@ -272,9 +275,8 @@ Callers reduce to this single contract:
 
 ```text
 post-commit         choobi update --commit <sha>                       (no target, no instruction)
-chat "update the    choobi update docs/api.md --chat -- "document the retry change"
+chat "update the    choobi update docs/api.md --commit <sha> --chat -- "document the retry change"
   api doc based on…"   (harness resolves the fuzzy target and supplies --chat)
-UI doc button       choobi update docs/api.md  + instruction field + scope picker
 targeted edit       choobi update docs/api.md --detached -- "clarify the retry backoff"
 ```
 
@@ -290,19 +292,20 @@ targeted edit       choobi update docs/api.md --detached -- "clarify the retry b
 - With neither a commit-anchored scope nor `--detached`, choobi returns typed
   `source_commit_required` rather than inventing a commit association.
 
-Every scope still passes the same relevance gate, surgical-edit, verification, commit, notification,
-and history pipeline. `--detached` changes only message authoring, not the write boundary.
+Every scope still passes the same relevance gate, surgical-edit, verification, commit, and history
+pipeline. `--detached` changes only message authoring, not the write boundary.
 
-Harness wrappers are responsible for obtaining the active conversation and PR context because the
-harness owns that data. The first runtime adapter should target one non-interactive coding-agent
-CLI. Additional runtime and harness adapters must implement the same versioned input and output
-schemas.
+Harness wrappers obtain active conversation and PR context because the harness owns that data.
+**As built**, the same portable skill supports Claude Code and Codex as harnesses. Claude is the
+only runtime because its CLI can enforce a native system prompt, JSON schema, no tools, no custom
+instructions, and no session persistence. A future runtime must meet that boundary rather than
+silently running as a tool-capable agent.
 
 ### 4.3 `choobi status` output
 
 `status` is a deterministic, no-model read of local state for the active repository. It surfaces the
-pending/failed/no-op machinery from §3.1 and the checkpoints from §7.3. The state is exact; the copy
-is deliberately warm. Each line is fixed, filled with the real record, and reused verbatim by the UI:
+pending/failed/no-op machinery from §3.1 and the checkpoints from §7.3. The CLI copy is fixed and
+filled with the real record:
 
 ```text
 pending      pending — choobi still working!
@@ -312,9 +315,8 @@ checkpoint   checkpoint <sha>, choobi last worked on <subject>
 idle         nothing running now!
 ```
 
-The friendly wording is presentation only; the machine-readable typed reason (`documentation_gap`,
-`source_commit_required`, `budget_exceeded`, verification failure, conflict) is still recorded and
-still shown next to a failed line so a stuck job is diagnosable.
+The friendly wording is presentation only; machine-readable reasons such as
+`documentation_gap`, `source_commit_required`, verification failure, and conflict remain visible.
 
 ## 5. Documentation engine
 
@@ -322,16 +324,15 @@ All three update paths call the same engine.
 
 ### 5.1 Scope collection
 
-Inputs are explicit and immutable:
+**As built**, inputs are explicit:
 
 - repository identity and root;
-- source commit, base commit, and head commit;
-- committed diff and enclosing symbols;
+- source commit and revision range when commit-anchored, plus the head observed at run start;
+- committed, staged, or working-tree diff and changed paths;
 - active-chat context when explicitly invoked;
-- candidate existing documents and allowed new-document placements;
+- candidate existing documents and SOP-declared `create_roots`;
 - content hashes for every existing candidate;
-- effective documentation policy, repository profile, style guide, and deterministic rules; and
-- prompt, runtime, and schema versions.
+- effective documentation policy, repository SOP, and resolved style guide.
 
 ### 5.2 Code-to-document linkage
 
@@ -340,8 +341,7 @@ Choobi discovers candidate documents using the cheapest available evidence:
 1. optional `covers:` front matter;
 2. README ownership of its immediate directory (non-recursive, so a root README is not a
    candidate for every change in the tree);
-3. literal path mentions in the document; and
-4. chat references to a named README, plan, design, or PRD.
+3. literal path mentions in the document.
 
 `covers:` is an optimization and an editable declaration, not truth. The verified source tree and
 the evidence attached to a specific update are authoritative.
@@ -362,11 +362,10 @@ change, so it misses new or unlinked code. Three mechanisms close that gap:
 
 Symbol-level linkage and embeddings remain out of scope for v1.
 
-The default writable surface is git-tracked Markdown or MDX explicitly classified as documentation,
-including README, `docs/**`, build-plan, design, and PRD paths. A new file must also match a declared
-document root and type from the local repository profile. Agent instruction files, source code, CI
-configuration, and arbitrary tracked Markdown are not writable unless the user explicitly adds them
-to the documentation allowlist.
+The default writable surface is git-tracked Markdown or MDX matched by the immutable allowlist:
+README files, `docs/**`, and build-plan paths. A new file must also fall under a structured
+`create_roots` entry in the opted-in repository SOP. Agent instruction files, source code, CI
+configuration, and arbitrary tracked Markdown are not writable.
 
 ### 5.3 Create, update, or stay silent
 
@@ -383,21 +382,22 @@ Choobi applies one disposition to each documentation need:
   formatting, tests, generated artifacts, temporary experiments, bug fixes that restore
   already-documented behavior, and non-durable implementation details.
 
-Automatic creation requires all of the following: a qualifying stable concept, a named audience and
-owner, a deterministic document type and writable path from the repository profile, no existing
-document that should own the content, and an explicit per-repository opt-in. If the change deserves
-documentation but any placement invariant is missing, Choobi records a typed `documentation_gap`
-and creates nothing. There is no guessed path or catch-all document.
+Creation requires a qualifying stable concept, no existing owner, explicit `allow_create: true`,
+and a target under a structured SOP `create_roots` entry. Created code blocks must appear verbatim
+in the supplied evidence. If a change deserves documentation but creation is disabled, Choobi
+records `documentation_gap` and creates nothing.
 
 ### 5.4 Relevance gate
 
-The deterministic gate rejects changes such as formatting, renamed locals, generated artifacts,
-and internal refactors with no externally documented behavior change. If no existing document or
-allowed new-document placement survives, choobi records a cheap no-op and makes no model call.
+The deterministic gate stops changes with no linked documentation and no new source surface. For a
+linked candidate, the bounded model disposition handles semantic cases such as formatting, renamed
+locals, generated documents, and internal refactors. If no candidate or allowed new-document
+placement survives, choobi records a cheap no-op and makes no model call.
 
-The LLM relevance decision receives only changed hunks, enclosing symbols, candidate document
-sections or placement declarations, relevant chat decisions, and the applicable style rules. It
-returns structured output.
+The LLM disposition receives the complete cross-file diff, candidate documents, structured
+placement roots, chat decisions, and style/SOP context. The combined prompt has one hard byte
+ceiling and fails rather than dropping evidence. The runtime returns one native schema-constrained
+object and cannot use tools.
 
 ### 5.5 Surgical edit
 
@@ -415,8 +415,14 @@ signature.
 Verification is the write boundary. As built, before any write choobi checks that:
 
 - the output path is inside the documentation allowlist;
-- referenced relative links and paths resolve;
-- proposed content contains no secret-shaped strings;
+- the target resolves inside the repository and is not a symlink;
+- inline relative Markdown links remain inside the repository and resolve;
+- every `covers:` entry matches a tracked path;
+- an update preserves existing front matter and every still-resolving `covers:` entry;
+- prompt inputs and proposed content contain no secret-shaped strings;
+- a create target is under an SOP-declared `create_roots` entry;
+- every code block in a created document appears verbatim in the supplied evidence;
+- the target has no staged or unstaged changes;
 - an update still matches the content hash choobi read (no concurrent edit);
 - a create target is still absent;
 - an update drops no more than one existing section; and
@@ -427,30 +433,24 @@ any check fails, choobi aborts the entire patch and commit and records the typed
 drops the bad part and commits the remainder.
 
 Planned but not yet implemented: matching referenced symbols and signatures against the source
-tree, and executing commands or examples through a repository-declared safe verifier.
+tree, and executing existing commands or examples through a repository-declared safe verifier.
 
 ## 6. Token and latency budget
 
 Every commit triggers choobi, but every commit must not trigger an expensive agent run.
 
-V1 uses these controls:
+**As built**, deterministic linkage runs before generation and semantic linkage is at most one extra
+call. Choobi sends complete evidence up to one prompt ceiling, then fails instead of truncating a
+block. Per-repository locking prevents concurrent writers. The fixture evaluation reports decision
+accuracy, write precision, recall, silence, required-fact recall, preservation, changed-line
+ceilings, and a finite set of forbidden-claim probes.
 
-- hooks only enqueue small events;
-- deterministic filtering of queued commits may be batched, while relevant commits remain distinct;
-- deterministic relevance runs before the LLM;
-- context contains only changed hunks, enclosing symbols, candidate doc sections, and relevant
-  style, repository-profile, and chat excerpts;
-- no-op results and completed analyses are cached by complete input fingerprint;
-- superseded jobs are cancelled before another model call;
-- the runtime adapter enforces a maximum call count and token budget per job;
-- one global scheduler gives interactive `choobi update` calls priority over background work,
-  limits background model concurrency across all repositories, and records `budget_exceeded`
-  instead of exceeding the configured daily budget; and
-- activity records retain input tokens, output tokens, duration, and outcome.
+The complete prompt has a 100,000-byte UTF-8 ceiling. Choobi fails with `context_too_large` rather
+than truncating evidence the model would need for a correct disposition or full-file output.
 
-Product metrics include documentation-update precision, missed-update recall, successful docs
-commits, failed verification rate, no-op rate, cache-hit rate, p50/p95 completion time, and p50/p95
-tokens per human commit.
+There is no global scheduler, durable queue, result cache, cancellation, call budget, daily budget,
+or token accounting yet. These remain release work; the product must not claim those metrics until
+the runtime adapter records them.
 
 ## 7. Documentation policy, style, and repository knowledge
 
@@ -460,10 +460,11 @@ Each choobi installation has a usable default policy and style without setup.
 
 The application ships an immutable, versioned baseline:
 
-- `baseline/style.md` contains prose guidance such as voice, tone, brevity, and structure.
-- `baseline/policy.yaml` contains the general create, update, and stay-silent criteria.
-- `baseline/rules.yaml` contains deterministic safety rules such as output allowlists, link checks,
-  and commit behavior.
+- `choobi/baseline/style.md` contains the evidence, structure, example, and voice contract.
+- `choobi/baseline/policy.yaml` contains the immutable allowlist and secret patterns.
+
+Deterministic write rules live in executable verifier and commit-writer code with regression tests;
+there is no declarative rules file that appears enforceable but is never read.
 
 Installed baseline files are never edited in place, so application upgrades cannot overwrite a
 user's preferences.
@@ -476,8 +477,8 @@ The user edits a personal guide at:
 ~/.choobi/style.md
 ```
 
-The UI shows the resolved style and distinguishes inherited baseline values from personal
-overrides. The personal guide may configure:
+The UI edits only personal overrides and states that the immutable baseline remains active. The
+resolved prompt appends those overrides after the baseline. The personal guide may configure:
 
 - voice, tone, and verbosity;
 - preferred and banned terminology;
@@ -493,17 +494,14 @@ Each initialized repository gets two Markdown files under `~/.choobi/repos/<chec
 unrelated repositories stay distinct.
 
 **SOP** (`sop.md`) is human-authored documentation preferences that choobi acts on. Its prose is fed
-into the engine prompt alongside the style guide, and its `allow_create` front-matter flag gates
-new-document creation. The default SOP allows creation, describes the document categories (public
-features and user journeys, public CLI or SDK reference, internal plans, and internal feature
-explanations), tells choobi to look for an existing owner before creating, and carries empty
-sections for repo-specific style, terminology, audience, ownership, cadence, verification, and what
-to never document. The user edits it in the window.
+into the engine prompt alongside the style guide. Creation is off by default. Enabling it requires
+both `allow_create: true` and a non-empty structured `create_roots` list; the verifier rejects a
+model-selected path outside those roots. The user edits the SOP in the window.
 
 **Knowledge base** (`knowledge.md`) is choobi's generated map of the repo: the writable documents
 grouped by category with their `covers:`, a top-level code map that flags directories no document
 covers, and the last activity. It is built in one deterministic pass over the git-tracked tree, with
-no model call. It regenerates on demand, and the user may also edit and save it.
+no model call. The window treats it as a read-only derived view and can regenerate it on demand.
 
 A per-repo `snapshot.json` records the source files choobi last reconciled, so it can detect new
 source that drifted in through commits the hook missed (see 5.2). Repository identity and activity
@@ -559,21 +557,21 @@ happen through commits, the CLI, and the agent skill.
 
 ### 8.0 Screens
 
-**Onboarding.** On first launch, choobi shows one onboarding screen: the user's name, an optional API
-key, and the runtime choice (claude or codex). It is the only screen shown until the user starts.
+**Onboarding.** On first launch, choobi asks for the user's name and shows the supported tool-free
+Claude runtime. Runtime authentication stays in the Claude CLI; Choobi never stores an API key.
 
 **Home.** Three tabs, plus two icons in the top right:
 
 - **instructions** — the repositories that ran `choobi init`, each shown by name. Opening one shows
   its full path and two panels: the editable **SOP** (per-repo preferences, with save and
-  return-to-default) and the **knowledge base** (choobi's generated repo map, editable, with a
+  return-to-default) and the **knowledge base** (Choobi's read-only generated repo map, with a
   regenerate action). See §7.3.
-- **style** — the resolved style guide, editable inline, with save and return-to-default.
+- **style** — personal overrides, editable inline, layered after the immutable baseline.
 - **changelog** — the repositories that ran choobi, each opening to its logs, each log opening to
   full detail (see §8.1).
 - **book icon** — the command reference, rendered from the same source as `choobi help` so the
   panel and CLI cannot drift.
-- **terminal icon** — hover to see the current runtime and model.
+- **terminal icon and footer** — visible and accessible runtime readiness.
 
 The window never exposes raw prompts or retains full chat transcripts.
 
@@ -587,15 +585,16 @@ Each history record contains:
 
 - repository identity and local path;
 - trigger type: `post_commit`, `agent_chat`, or `pr_review`;
-- source, base, head, and generated commit SHAs where applicable;
+- source, observed head, and generated commit SHAs where applicable;
 - timestamp and duration;
 - documents changed;
 - the one-sentence completion summary;
 - the exact documentation patch;
-- verification results and any typed failure;
-- committed, failed, or no-op status;
-- runtime and prompt versions; and
-- input tokens, output tokens, and estimated cost when the runtime exposes it.
+- committed, failed, or no-op status; and
+- any typed failure reason.
+
+The schema reserves input/output token columns, but the current runtime adapter does not populate
+them. Runtime and prompt version capture also remains release work.
 
 The history database does not store source-code snapshots, secrets, or full chat transcripts.
 
@@ -605,12 +604,12 @@ V1 stores preferences and activity locally (override the root with `CHOOBI_HOME`
 
 ```text
 ~/.choobi/
-  config.json            name, runtime agent, optional API key, per-repo create opt-in
+  config.json            name, runtime, mode, and onboarding state
   style.md               personal style override
   choobi.db              SQLite: activity records, per-repo checkpoints, and the repo registry
   repos/<checkout-id>/
     sop.md               per-repo documentation preferences (editable)
-    knowledge.md         generated repo map (editable)
+    knowledge.md         generated repo map (read-only derived state)
     snapshot.json        reconciled source files, for drift detection
     update.lock          per-repo advisory lock
   logs/hook.log          background hook output
@@ -622,42 +621,39 @@ SQLite is the personal activity source of truth. A committed Markdown changelog 
 
 ```text
 git post-commit ─┐
-agent chat ──────┼─> event/context adapter ─> disposition engine ─> verifier ─> docs commit
-PR review ───────┘             │                       │               │
-                               │                       │               └─> notification
-                               │                       └─> runtime adapter
-                               ├─> repository knowledge <─────────────┤
-                               └─> personal SQLite history <─────────┘
-                                                  │
-                                                  └─> local UI
+agent chat ──────┼─> CLI scope ─> linkage ─> tool-free runtime ─> verifier ─> docs commit
+PR review ───────┘       │            │                                  │
+                         └────────────┴────────> SQLite history/snapshot <┘
+                                                     │
+repo scan ─────────────> read-only knowledge view ─> local UI
 ```
 
 Choobi v1 is one local modular application, not a set of network services.
 
-Required components:
+**As built:**
 
 ```text
 standalone CLI
 post-commit hook installer and shim
-per-repository event queue, lock, and background runner
+per-repository advisory lock and background processes
 git snapshot and diff collector
 code-to-document linkage and relevance gate
 create, update, or stay-silent disposition engine
-minimal context builder and token budgeter
-global priority and token-budget scheduler
-one coding-agent runtime adapter
+bounded context builder
+tool-free Claude runtime adapter with native schemas
 documentation patch generator
 deterministic verifier and secret scanner
 docs-only commit writer with recursion guard
-notification adapter
 personal style resolver
-local repository profiler and knowledge repository
+local repository scan and read-only knowledge view
 SQLite activity repository
 local UI
 one supported coding-agent harness wrapper
-supported shell prompt integration for safe commit attachment
 PR-creation wrapper and description annotator
 ```
+
+The durable event queue, ordered recovery, global budget scheduler, token metrics, notifications,
+and multi-document reconciliation are required additions, not hidden components of this diagram.
 
 ## 10. Security and correctness invariants
 
@@ -682,10 +678,11 @@ background update is in flight.
 
 ## 11. V1 scope
 
-V1 includes:
+Target V1 includes the following. The implementation-status paragraph at the top names what is
+still missing:
 
 - automatic post-commit documentation analysis;
-- guarded follow-up-commit attachment through an initialized prompt integration;
+- guarded follow-up-commit attachment from an initialized repository;
 - verified docs-only follow-up commits with the source commit's exact message;
 - one-line completion notifications;
 - explicit `choobi update` from supported coding-agent chats;
@@ -790,7 +787,7 @@ and precision but is not a correctness prerequisite.
 Build a manual command for one repository and one runtime:
 
 ```text
-choobi update --source-commit <sha>
+choobi update --commit <sha>
 ```
 
 Given a real commit, it must classify the need as create, update, or stay silent. In this phase it
@@ -829,9 +826,9 @@ versioned context schema. Validate README, build-plan, design, and PRD updates f
 
 ### Phase 4 — personal UI and history
 
-Ship the local SQLite store and the `choobi` window: onboarding, the blob, the document-centric home
-with per-document update composers, and the **View changelog**, **View commands**, and **View style
-guide** panels. The changelog must group by repository, sort by date, display patches and
+Ship the local SQLite store and the `choobi` window: onboarding, the blob, and the **View changelog**,
+**View commands**, **View style guide**, SOP, and repository-knowledge panels. The changelog must
+group by repository, sort by date, display patches and
 verification evidence, and expose token usage without retaining chat transcripts. **View commands**
 renders from the same source as `choobi help`.
 
@@ -867,13 +864,16 @@ Resolved (as built):
 - **Stack**: Python for the CLI and engine; a native desktop window via pywebview (WKWebView on
   macOS) with a plain HTML/CSS/JS front end served on loopback with a per-launch token. Dependencies
   are PyYAML and pywebview. This is the "embedded local web UI" option from §8, in a native window.
-- **Runtime and harness adapters**: both Claude Code (`claude -p`) and Codex (`codex exec`, run
-  read-only) as runtimes, chosen with `choobi auth`; and one portable agent skill installed into both
-  Claude Code and Codex for the chat path.
+- **Runtime and harness adapters**: Claude Code (`claude -p`) is the only V1 runtime because it can
+  run with a native system prompt, JSON schema, no tools or customizations, and no persisted session.
+  One portable agent skill supports both Claude Code and Codex as chat harnesses.
 
 Still open:
 
 - Cross-platform notification implementation.
+- Durable ordered event queue and crash recovery.
+- Multi-document reconciliation without recursive planning loops.
+- Runtime token, cost, and prompt-version accounting.
 - Exact documentation allowlist configuration format.
 - Exact `choobi/guide.yaml` schema and migration policy.
 - Which inferred V1 repository-profile corrections can be promoted into the V2 committed guide.
