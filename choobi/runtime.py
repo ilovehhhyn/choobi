@@ -11,7 +11,7 @@ import json
 import os
 import shutil
 import subprocess
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from . import config
 from .errors import RuntimeUnavailable
@@ -20,7 +20,10 @@ from .errors import RuntimeUnavailable
 class Runtime:
     name = "base"
 
-    def complete(self, prompt: str, system: str = "", timeout: int = 180) -> str:
+    def complete(
+        self, prompt: str, system: str = "", timeout: int = 180,
+        schema: Optional[Dict[str, Any]] = None,
+    ) -> str:
         raise NotImplementedError
 
 
@@ -29,22 +32,22 @@ class ClaudeCliRuntime(Runtime):
 
     name = "claude"
 
-    def __init__(self, api_key: str = "") -> None:
-        self.api_key = api_key
-
-    def complete(self, prompt: str, system: str = "", timeout: int = 180) -> str:
+    def complete(
+        self, prompt: str, system: str = "", timeout: int = 180,
+        schema: Optional[Dict[str, Any]] = None,
+    ) -> str:
         binary = shutil.which("claude")
         if not binary:
             raise RuntimeUnavailable("claude CLI not found on PATH")
-        cmd = [binary, "-p", prompt, "--output-format", "json"]
+        cmd = [binary, "-p", "--output-format", "json", "--tools", "",
+               "--safe-mode", "--no-session-persistence"]
         if system:
-            cmd += ["--append-system-prompt", system]
-        env = dict(os.environ)
-        if self.api_key:
-            env["ANTHROPIC_API_KEY"] = self.api_key
+            cmd += ["--system-prompt", system]
+        if schema:
+            cmd += ["--json-schema", json.dumps(schema, separators=(",", ":"))]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                                  env=env, stdin=subprocess.DEVNULL)
+                                  env=dict(os.environ), input=prompt)
         except (subprocess.TimeoutExpired, OSError) as exc:
             raise RuntimeUnavailable(f"claude CLI failed: {exc}") from exc
         if proc.returncode != 0:
@@ -54,37 +57,6 @@ class ClaudeCliRuntime(Runtime):
         except json.JSONDecodeError as exc:
             raise RuntimeUnavailable(f"claude CLI returned non-JSON envelope: {exc}") from exc
         return str(envelope.get("result", ""))
-
-
-class CodexCliRuntime(Runtime):
-    """Shells the `codex exec` non-interactive path."""
-
-    name = "codex"
-
-    def __init__(self, api_key: str = "") -> None:
-        self.api_key = api_key
-
-    def complete(self, prompt: str, system: str = "", timeout: int = 180) -> str:
-        binary = shutil.which("codex")
-        if not binary:
-            raise RuntimeUnavailable("codex CLI not found on PATH")
-        full = (system + "\n\n" + prompt) if system else prompt
-        env = dict(os.environ)
-        if self.api_key:
-            env["OPENAI_API_KEY"] = self.api_key
-        try:
-            # read-only sandbox: codex is choobi's brain, not an actor. It returns the
-            # disposition JSON; choobi does every file write. codex must not touch the repo.
-            proc = subprocess.run(
-                [binary, "exec", "--sandbox", "read-only", full],
-                capture_output=True, text=True, timeout=timeout,
-                env=env, stdin=subprocess.DEVNULL,
-            )
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            raise RuntimeUnavailable(f"codex CLI failed: {exc}") from exc
-        if proc.returncode != 0:
-            raise RuntimeUnavailable(f"codex CLI exited {proc.returncode}: {proc.stderr.strip()}")
-        return proc.stdout
 
 
 class FakeRuntime(Runtime):
@@ -98,7 +70,10 @@ class FakeRuntime(Runtime):
         self.response = list(response) if isinstance(response, list) else response
         self.last_prompt: Optional[str] = None
 
-    def complete(self, prompt: str, system: str = "", timeout: int = 180) -> str:
+    def complete(
+        self, prompt: str, system: str = "", timeout: int = 180,
+        schema: Optional[Dict[str, Any]] = None,
+    ) -> str:
         self.last_prompt = prompt
         if callable(self.response):
             return self.response(prompt)
@@ -111,6 +86,9 @@ def get_runtime(cfg: config.Config) -> Runtime:
     """Select the runtime by config. CHOOBI_RUNTIME=fake overrides for deterministic tests."""
     if os.environ.get("CHOOBI_RUNTIME") == "fake":
         return FakeRuntime(os.environ.get("CHOOBI_FAKE_RESPONSE", ""))
-    if cfg.agent == "codex":
-        return CodexCliRuntime(cfg.api_key)
-    return ClaudeCliRuntime(cfg.api_key)
+    if cfg.agent != "claude":
+        raise RuntimeUnavailable(
+            f"runtime {cfg.agent!r} cannot enforce Choobi's tool-free system contract; "
+            "run `choobi auth claude`"
+        )
+    return ClaudeCliRuntime()

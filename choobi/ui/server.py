@@ -1,8 +1,7 @@
 """Local UI server: loopback-only, per-launch access token (build-plan §8).
 
-Serves the static dooni-style front end and a small JSON API backed by the same engine,
-history, help, and style modules the CLI uses. The window is a form that composes the
-`choobi update` contract; it invents nothing.
+Serves the static dooni-style configuration and inspection front end. Its JSON API exposes the
+same history, help, style, SOP, and generated knowledge data as the CLI modules.
 """
 from __future__ import annotations
 
@@ -15,8 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
-from .. import baseline, config, gitio, help as help_mod, history, repos as repos_mod
-from ..errors import ChoobiError
+from .. import auth, config, gitio, help as help_mod, history, repos as repos_mod
+from ..errors import ChoobiError, RuntimeUnavailable
 
 _STATIC = Path(__file__).resolve().parent / "static"
 _TOKEN = secrets.token_urlsafe(24)
@@ -94,8 +93,11 @@ class Handler(BaseHTTPRequestHandler):
         cfg = config.Config.load()
         root = _repo_root()
         if path == "/api/config":
+            runtime_state = auth.is_logged_in(cfg.agent)
             return self._json({"name": cfg.name, "onboarded": cfg.onboarded,
                                "mode": cfg.mode, "agent": cfg.agent,
+                               "runtime_state": ({True: "ready", False: "not logged in",
+                                                  None: "not installed"}[runtime_state]),
                                "has_repo": root is not None,
                                "repo": str(root) if root else ""})
         if path == "/api/commands":
@@ -103,7 +105,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/style":
             personal = config.personal_style_path()
             is_personal = personal.exists() and bool(personal.read_text().strip())
-            content = personal.read_text() if is_personal else baseline.baseline_style()
+            content = personal.read_text() if is_personal else ""
             return self._json({"content": content, "is_personal": is_personal})
         if path == "/api/repos":
             return self._json({"repos": history.list_repos()})
@@ -125,23 +127,28 @@ class Handler(BaseHTTPRequestHandler):
     def _post_api(self, path: str, payload: Dict[str, Any]) -> None:
         cfg = config.Config.load()
         if path == "/api/onboard":
+            if payload.get("agent", "claude") != "claude":
+                raise RuntimeUnavailable("Choobi V1 requires the tool-free Claude runtime")
             cfg.name = payload.get("name", "").strip()
-            cfg.api_key = payload.get("api_key", "").strip()
-            cfg.agent = payload.get("agent", "claude")
+            cfg.agent = "claude"
             cfg.onboarded = True
             cfg.save()
             return self._json({"ok": True})
         if path == "/api/style/save":
             p = config.personal_style_path()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(payload.get("content", ""))
-            return self._json({"ok": True, "is_personal": True})
+            content = payload.get("content", "")
+            is_personal = bool(content.strip())
+            if is_personal:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(content)
+            else:
+                p.unlink(missing_ok=True)
+            return self._json({"ok": True, "is_personal": is_personal})
         if path == "/api/style/reset":
             p = config.personal_style_path()
             if p.exists():
                 p.unlink()
-            return self._json({"ok": True, "is_personal": False,
-                               "content": baseline.baseline_style()})
+            return self._json({"ok": True, "is_personal": False, "content": ""})
         if path == "/api/repo/sop/save":
             repos_mod.save_sop(payload["repo"], payload.get("content", ""))
             return self._json({"ok": True, "is_default": False})
@@ -154,9 +161,6 @@ class Handler(BaseHTTPRequestHandler):
             rec = history.get_repo(payload["repo"])
             content = repos_mod.generate_knowledge(payload["repo"], rec["path"] if rec else "")
             return self._json({"content": content})
-        if path == "/api/repo/knowledge/save":
-            repos_mod.save_knowledge(payload["repo"], payload.get("content", ""))
-            return self._json({"ok": True})
         self._json({"error": "not found"}, 404)
 
 

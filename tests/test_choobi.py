@@ -47,6 +47,11 @@ UPDATE_RESP = json.dumps({
     "disposition": "update", "target": "docs/api.md",
     "summary": "documented the configurable retry backoff in docs/api.md",
     "content": "---\ncovers: src/api.py\n---\n# API\n\nRetries up to n times (default 3).\n",
+    "source_paths": [],
+})
+SILENT_RESP = json.dumps({
+    "disposition": "silent", "target": "", "summary": "", "content": "",
+    "source_paths": [],
 })
 
 
@@ -124,7 +129,7 @@ class ChoobiTest(unittest.TestCase):
 
     def test_silent_is_no_op(self) -> None:
         r = self._run(UpdateRequest(targets=["docs/api.md"], source_commit=self.head,
-                                    trigger="post_commit"), json.dumps({"disposition": "silent"}))
+                                    trigger="post_commit"), SILENT_RESP)
         self.assertEqual(r.status, "no_op")
 
     def test_no_candidates_no_model_call(self) -> None:
@@ -154,20 +159,20 @@ class ChoobiTest(unittest.TestCase):
 
     def test_broken_link_rejected(self) -> None:
         bad = json.dumps({"disposition": "update", "target": "docs/api.md", "summary": "x",
-                          "content": "# API\n\nSee [gone](./nope.md).\n"})
+                          "content": "# API\n\nSee [gone](./nope.md).\n", "source_paths": []})
         with self.assertRaises(VerificationFailed):
             self._run(UpdateRequest(targets=["docs/api.md"], detached=True, instruction="x"), bad)
 
     def test_secret_rejected(self) -> None:
         secret = "ghp_" + "a" * 36
         bad = json.dumps({"disposition": "update", "target": "docs/api.md", "summary": "x",
-                          "content": f"# API\n\ntoken {secret}\n"})
+                          "content": f"# API\n\ntoken {secret}\n", "source_paths": []})
         with self.assertRaises(VerificationFailed):
             self._run(UpdateRequest(targets=["docs/api.md"], detached=True, instruction="x"), bad)
 
     def test_off_scope_target_rejected(self) -> None:
         bad = json.dumps({"disposition": "update", "target": "README.md", "summary": "x",
-                          "content": "# demo\n"})
+                          "content": "# demo\n", "source_paths": []})
         with self.assertRaises(RuntimeOutputInvalid):
             self._run(UpdateRequest(targets=["docs/api.md"], detached=True, instruction="x"), bad)
 
@@ -176,7 +181,7 @@ class ChoobiTest(unittest.TestCase):
         repo_id = config.checkout_id(gitio.common_dir(self.root))
         repos.save_sop(repo_id, "---\nallow_create: false\n---\nno new docs\n")
         crt = json.dumps({"disposition": "create", "target": "docs/new.md",
-                          "summary": "new doc", "content": "# New\n"})
+                          "summary": "new doc", "content": "# New\n", "source_paths": []})
         r = self._run(UpdateRequest(targets=["docs/new.md"], detached=True, instruction="x"), crt)
         self.assertEqual(r.status, "gap")
         self.assertEqual(r.reason, "documentation_gap")
@@ -203,14 +208,16 @@ class ChoobiTest(unittest.TestCase):
         (self.root / "docs" / "api.md").write_text(multi)
         _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "expand api doc")
         drop = json.dumps({"disposition": "update", "target": "docs/api.md", "summary": "x",
-                           "content": "---\ncovers: src/api.py\n---\n# API\n\nonly intro now.\n"})
+                           "content": "---\ncovers: src/api.py\n---\n# API\n\nonly intro now.\n",
+                           "source_paths": []})
         with self.assertRaises(VerificationFailed):
             self._run(UpdateRequest(targets=["docs/api.md"], detached=True, instruction="x"), drop)
 
     def test_update_preserving_sections_ok(self) -> None:
         keep = json.dumps({"disposition": "update", "target": "docs/api.md",
                            "summary": "add a note", "content":
-                           "---\ncovers: src/api.py\n---\n# API\n\nRetries once.\n\n## Notes\n\nnew.\n"})
+                           "---\ncovers: src/api.py\n---\n# API\n\nRetries once.\n\n## Notes\n\nnew.\n",
+                           "source_paths": []})
         r = self._run(UpdateRequest(targets=["docs/api.md"], detached=True, instruction="x"), keep)
         self.assertEqual(r.status, "committed")
         self.assertIn("## Notes", (self.root / "docs" / "api.md").read_text())
@@ -218,7 +225,8 @@ class ChoobiTest(unittest.TestCase):
     def test_concurrent_edit_conflict(self) -> None:
         # Model returns content, but the file changes after hashing (simulated) -> conflict.
         class MutatingRuntime(FakeRuntime):
-            def complete(self, prompt: str, system: str = "", timeout: int = 180) -> str:
+            def complete(self, prompt: str, system: str = "", timeout: int = 180,
+                         schema=None) -> str:
                 (Path(self.root) / "docs" / "api.md").write_text("mutated after read\n")  # type: ignore[attr-defined]
                 return UPDATE_RESP
         rt = MutatingRuntime(UPDATE_RESP)
@@ -267,20 +275,24 @@ class ChoobiTest(unittest.TestCase):
         repo_id = config.checkout_id(gitio.common_dir(self.root))
         content, is_default = repos.read_sop(repo_id, str(self.root))
         self.assertTrue(is_default)
-        self.assertTrue(repos.sop_allows_create(repo_id, str(self.root)))  # default now allows creation
+        self.assertFalse(repos.sop_allows_create(repo_id, str(self.root)))
         repos.save_sop(repo_id, "---\nallow_create: false\n---\nNo new docs here.\n")
         _, is_default2 = repos.read_sop(repo_id, str(self.root))
         self.assertFalse(is_default2)
         self.assertFalse(repos.sop_allows_create(repo_id, str(self.root)))
         self.assertIn("No new docs", repos.sop_prompt_body(repo_id, str(self.root)))
         repos.reset_sop(repo_id)
-        self.assertTrue(repos.sop_allows_create(repo_id, str(self.root)))  # back to default (allows)
+        self.assertFalse(repos.sop_allows_create(repo_id, str(self.root)))
 
     def test_sop_enables_create(self) -> None:
         repo_id = config.checkout_id(gitio.common_dir(self.root))
-        repos.save_sop(repo_id, "---\nallow_create: true\n---\nCreate docs for new features.\n")
+        repos.save_sop(
+            repo_id,
+            "---\nallow_create: true\ncreate_roots: [docs/]\n---\nCreate docs for new features.\n",
+        )
         crt = json.dumps({"disposition": "create", "target": "docs/new.md",
-                          "summary": "new feature doc", "content": "# New feature\n\nDetails.\n"})
+                          "summary": "new feature doc", "content": "# New feature\n\nDetails.\n",
+                          "source_paths": []})
         r = self._run(UpdateRequest(targets=["docs/new.md"], detached=True, instruction="x"), crt)
         self.assertEqual(r.status, "committed")
         self.assertTrue((self.root / "docs" / "new.md").exists())
@@ -300,6 +312,9 @@ class ChoobiTest(unittest.TestCase):
         self.assertEqual(report["precision"], 1.0)
         self.assertEqual(report["recall"], 1.0)
         self.assertEqual(report["silence"], 1.0)
+        self.assertEqual(report["required_fact_recall"], 1.0)
+        self.assertEqual(report["forbidden_claim_rate"], 0.0)
+        self.assertEqual(report["preservation_rate"], 1.0)
 
     def test_eval_semantic_linkage(self) -> None:
         # Step 2: a modified file no doc covers is linked to the right doc by the model pass.
@@ -310,7 +325,9 @@ class ChoobiTest(unittest.TestCase):
     def test_covers_self_reinforces(self) -> None:
         # Step 3: after choobi writes a doc for a change, that doc's covers names the code,
         # so the next time deterministic linkage finds it without a model pass.
-        merged = docs.merge_covers("# Login\n\nbody\n", ["src/auth.py"])
+        merged = docs.merge_covers(
+            "# Login\n\nbody\n", "# Login\n\nbody\n", ["src/auth.py"], ["src/auth.py"]
+        )
         self.assertIn("covers", merged)
         self.assertIn("src/auth.py", merged)
 

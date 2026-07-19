@@ -70,6 +70,7 @@ li.empty::before { content: ""; }
 li.clickable { cursor: pointer; }
 li.clickable::before { content: "▢"; position: absolute; left: 0; }
 li.clickable:hover { background: #f0f0f0; }
+li.clickable:focus { outline: 1px solid #000; outline-offset: -1px; }
 .hint { opacity: 0.5; font-size: 11px; margin-bottom: 8px; }
 .btn-row { display: flex; gap: 8px; margin-bottom: 12px; }
 .btn-row button { flex: 1; }

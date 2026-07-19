@@ -1,7 +1,7 @@
 """Per-repo advisory lock so two updates never write the same repo at once.
 
-flock-based, non-blocking: a second update sees the lock held and reports pending rather
-than racing. This is the only concurrency control v1 needs — commits are human-paced.
+flock-based: background updates wait, while an interactive update or PR operation fails with a
+typed pending reason instead of racing.
 """
 from __future__ import annotations
 
@@ -21,11 +21,12 @@ class RepoLock:
         self.path = _path(repo_id)
         self._f: Optional["open"] = None  # type: ignore[valid-type]
 
-    def acquire(self) -> bool:
+    def acquire(self, *, blocking: bool = False) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         f = open(self.path, "w")
         try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            mode = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+            fcntl.flock(f, mode)
         except OSError:
             f.close()
             return False

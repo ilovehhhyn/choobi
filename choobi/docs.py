@@ -13,7 +13,22 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from . import gitio
-from .errors import AmbiguousTarget, TargetNotFound
+from .errors import AmbiguousTarget, NotAllowedPath, TargetNotFound, VerificationFailed
+
+
+def checked_path(root: Path, rel_path: str) -> Path:
+    """Return a repository-contained path with no symlink in its relative path."""
+    candidate = root / rel_path
+    resolved_root = root.resolve()
+    resolved = candidate.resolve(strict=False)
+    if resolved != resolved_root and resolved_root not in resolved.parents:
+        raise NotAllowedPath(f"{rel_path} resolves outside the repository")
+    cursor = root
+    for part in Path(rel_path).parts:
+        cursor /= part
+        if cursor.is_symlink():
+            raise NotAllowedPath(f"{rel_path} resolves through a symlink")
+    return candidate
 
 
 def _glob_to_re(pattern: str) -> "re.Pattern[str]":
@@ -42,6 +57,9 @@ def _glob_to_re(pattern: str) -> "re.Pattern[str]":
 
 
 def is_allowed(rel_path: str, policy: Dict[str, Any]) -> bool:
+    path = Path(rel_path)
+    if path.is_absolute() or ".." in path.parts or path.as_posix() != rel_path:
+        return False
     return any(_glob_to_re(p).match(rel_path) for p in policy["allowlist"])
 
 
@@ -63,38 +81,48 @@ def _front_matter(text: str) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
-def _covers_globs(text: str) -> List[str]:
+def _covers_globs(text: str, *, strict: bool = False) -> List[str]:
     fm = _front_matter(text)
+    if text.startswith("---\n") and fm is None:
+        if strict:
+            raise VerificationFailed("documentation front matter must be a YAML mapping")
+        return []
     if not fm or "covers" not in fm:
         return []
     covers = fm["covers"]
-    return [covers] if isinstance(covers, str) else [str(c) for c in covers]
+    if isinstance(covers, str):
+        return [covers]
+    if isinstance(covers, list) and all(isinstance(value, str) for value in covers):
+        return covers
+    if strict:
+        raise VerificationFailed("covers must be a path string or list of path strings")
+    return []
 
 
 def candidate_docs(root: Path, changed: List[str], policy: Dict[str, Any]) -> List[str]:
     """Existing writable docs plausibly related to the changed files."""
     docs = writable_docs(root, policy)
-    changed_set = set(changed)
     hits: List[str] = []
     for doc in docs:
-        if doc in changed_set:
+        related = [path for path in changed if path != doc]
+        if not related:
             continue  # a doc editing itself is not evidence about code
-        text = (root / doc).read_text(errors="replace")
+        text = checked_path(root, doc).read_text(errors="replace")
         matched = False
         # 1. covers: front matter
         for glob in _covers_globs(text):
             rx = _glob_to_re(glob)
-            if any(rx.match(c) for c in changed):
+            if any(rx.match(c) for c in related):
                 matched = True
                 break
         # 2. README owns the files DIRECTLY in its directory (non-recursive, so a root
         #    README does not become a candidate for every change in the tree).
         if not matched and Path(doc).name.lower() == "readme.md":
             owner_dir = str(Path(doc).parent)
-            if any(str(Path(c).parent) == owner_dir for c in changed):
+            if any(str(Path(c).parent) == owner_dir for c in related):
                 matched = True
         # 3. literal path mention in the body
-        if not matched and any(c in text for c in changed):
+        if not matched and any(c in text for c in related):
             matched = True
         if matched:
             hits.append(doc)
@@ -138,38 +166,55 @@ def doc_index(root: Path, doc_paths: List[str]) -> str:
     """Compact one-line-per-doc index (path, first heading, covers) for the linkage step."""
     lines = []
     for d in doc_paths:
-        text = (root / d).read_text(errors="replace")
+        text = checked_path(root, d).read_text(errors="replace")
         covers = _covers_globs(text)
         lines.append(f"- {d} | {first_heading(text)} | covers: {', '.join(covers) or 'none'}")
     return "\n".join(lines)
 
 
-def merge_covers(content: str, new_globs: List[str]) -> str:
+def merge_covers(
+    original: str, content: str, new_globs: List[str], tracked_paths: List[str],
+) -> str:
     """Add `new_globs` to a doc's `covers:` front matter so future linkage finds it (step F).
 
     Preserves other front-matter keys and the body. Adds a front-matter block if absent.
     """
-    if not new_globs:
+    old_fm = _front_matter(original)
+    new_fm = _front_matter(content)
+    if original.startswith("---\n") and old_fm is None:
+        raise VerificationFailed("existing documentation front matter is invalid")
+    if content.startswith("---\n") and new_fm is None:
+        raise VerificationFailed("documentation front matter must be a YAML mapping")
+    old_meta = {key: value for key, value in (old_fm or {}).items() if key != "covers"}
+    new_meta = {key: value for key, value in (new_fm or {}).items() if key != "covers"}
+    if original and old_meta != new_meta:
+        raise VerificationFailed("an update must preserve existing front matter metadata")
+
+    old_covers = _covers_globs(original, strict=True)
+    proposed = _covers_globs(content, strict=True)
+    live_covers = [
+        pattern for pattern in old_covers
+        if any(_glob_to_re(pattern).match(path) for path in tracked_paths)
+    ]
+    if not set(live_covers) <= set(proposed):
+        raise VerificationFailed("an update must preserve existing live covers entries")
+    if not set(proposed) <= set(old_covers) | set(new_globs):
+        raise VerificationFailed("model output added an unverified covers entry")
+    merged = list(dict.fromkeys([*live_covers, *new_globs]))
+    if proposed == merged:
         return content
-    fm: Dict[str, Any] = {}
+
+    fm: Dict[str, Any] = dict(new_fm or {})
     body = content
     if content.startswith("---\n"):
         end = content.find("\n---", 4)
-        if end != -1:
-            try:
-                fm = yaml.safe_load(content[4:end]) or {}
-            except yaml.YAMLError:
-                fm = {}
-            body = content[end + 4:].lstrip("\n")
-    if not isinstance(fm, dict):
-        fm = {}
-    existing = fm.get("covers", [])
-    if isinstance(existing, str):
-        existing = [existing]
-    merged = list(dict.fromkeys([*existing, *new_globs]))  # dedup, preserve order
-    if merged == existing:
-        return content
-    fm["covers"] = merged
+        body = content[end + 4:].lstrip("\n")
+    if merged:
+        fm["covers"] = merged
+    else:
+        fm.pop("covers", None)
+    if not fm:
+        return body
     front = yaml.safe_dump(fm, sort_keys=False, default_flow_style=False).strip()
     return f"---\n{front}\n---\n{body}"
 

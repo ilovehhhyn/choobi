@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <title>choobi</title>
@@ -12,11 +12,7 @@
       <div class="blob cheese"></div>
       <div class="onboard-title">before we start</div>
       <label>your name<input id="ob-name" type="text" placeholder="helen" autocomplete="off" /></label>
-      <label>anthropic api key <span class="opt">(optional if claude is logged in)</span>
-        <input id="ob-key" type="password" placeholder="sk-ant-…" autocomplete="off" /></label>
-      <label>runtime
-        <select id="ob-agent"><option value="claude">claude</option><option value="codex">codex</option></select>
-      </label>
+      <div>runtime&nbsp;&nbsp;claude (tool-free)</div>
       <button id="ob-save">start</button>
       <div id="ob-error"></div>
     </div>
@@ -75,10 +71,9 @@
             <div id="sop-result"></div>
           </div>
           <div id="instr-kb" class="subpane hidden">
-            <div id="kb-state" class="opt">choobi's map of this repo — edit and save, or regenerate.</div>
-            <textarea id="kb-editor" rows="13" spellcheck="false"></textarea>
+            <div id="kb-state" class="opt">choobi's generated map of this repo.</div>
+            <textarea id="kb-editor" rows="13" spellcheck="false" readonly></textarea>
             <div class="row-actions">
-              <button id="kb-save">save</button>
               <button id="kb-regen">regenerate</button>
             </div>
             <div id="kb-result"></div>
@@ -89,7 +84,8 @@
       <!-- STYLE -->
       <section id="panel-style" class="panel hidden">
         <div id="style-state" class="opt"></div>
-        <textarea id="style-editor" rows="16" spellcheck="false"></textarea>
+        <textarea id="style-editor" rows="16" spellcheck="false"
+                  placeholder="personal exceptions to the built-in style"></textarea>
         <div class="row-actions">
           <button id="style-save">save</button>
           <button id="style-reset">return to default</button>
@@ -120,7 +116,7 @@
         <ul id="commands-list"></ul>
       </section>
     </main>
-    <footer><span id="status">ready</span></footer>
+    <footer><span id="status" aria-live="polite">ready</span></footer>
   </div>
 
   <script src="/static/app.js"></script>

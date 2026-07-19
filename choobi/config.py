@@ -8,12 +8,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import List
+
+from .errors import InvalidRepository
 
 
 def home() -> Path:
@@ -34,6 +36,8 @@ def db_path() -> Path:
 
 
 def repo_dir(checkout_id: str) -> Path:
+    if re.fullmatch(r"[0-9a-f]{16}", checkout_id) is None:
+        raise InvalidRepository("repository id must be 16 lowercase hexadecimal characters")
     return home() / "repos" / checkout_id
 
 
@@ -44,16 +48,11 @@ def logs_dir() -> Path:
 @dataclass
 class Config:
     name: str = ""
-    # Credential for the runtime CLI. Empty means "rely on the agent CLI's own auth".
-    api_key: str = ""
     # Which coding-agent CLI backs the runtime adapter.
     agent: str = "claude"
     # Completion-message verbosity toggle, mirrored in the UI.
     mode: str = "curt"
     onboarded: bool = False
-    # Repositories the user has opted into automatic document creation for (checkout ids).
-    create_enabled_repos: List[str] = field(default_factory=list)
-
     @classmethod
     def load(cls) -> "Config":
         p = config_path()
@@ -75,8 +74,9 @@ def invocation() -> str:
     Prefers a `choobi` on PATH; otherwise falls back to `python -m choobi` with the
     package's PYTHONPATH baked in so it works from a source checkout too.
     """
-    if shutil.which("choobi"):
-        return "choobi"
+    binary = shutil.which("choobi")
+    if binary:
+        return shlex.quote(binary)
     pkg_parent = Path(__file__).resolve().parent.parent
     return f"PYTHONPATH={shlex.quote(str(pkg_parent))} {shlex.quote(sys.executable)} -m choobi"
 

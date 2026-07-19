@@ -1,7 +1,7 @@
 """`choobi status` — a deterministic, warm read of local state (build-plan §4.3).
 
-The wording is fixed and reused verbatim by the UI; the typed reason rides alongside a
-failed line so a stuck job stays diagnosable.
+The CLI wording is fixed; the typed reason rides alongside a failed line so a stuck job stays
+diagnosable.
 """
 from __future__ import annotations
 

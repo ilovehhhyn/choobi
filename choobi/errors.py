@@ -20,6 +20,10 @@ class SourceCommitRequired(ChoobiError):
     reason = "source_commit_required"
 
 
+class InvalidScope(ChoobiError):
+    reason = "invalid_scope"
+
+
 class RuntimeUnavailable(ChoobiError):
     """The configured runtime could not be reached. We never select a different one."""
 
@@ -58,3 +62,31 @@ class Conflict(ChoobiError):
     """The target changed under us since scope collection (hash mismatch)."""
 
     reason = "conflict"
+
+
+class CommitFailed(ChoobiError):
+    reason = "commit_failed"
+
+
+class HookConflict(ChoobiError):
+    reason = "hook_conflict"
+
+
+class InvalidSop(ChoobiError):
+    reason = "invalid_sop"
+
+
+class InvalidRepository(ChoobiError):
+    reason = "invalid_repository"
+
+
+class InvalidSnapshot(ChoobiError):
+    reason = "invalid_snapshot"
+
+
+class ContextTooLarge(ChoobiError):
+    reason = "context_too_large"
+
+
+class PendingDocsUpdate(ChoobiError):
+    reason = "pending_docs_update"

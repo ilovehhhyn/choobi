@@ -13,7 +13,7 @@ from . import docs, gitio
 from .errors import Conflict, NotAllowedPath, VerificationFailed
 
 _LINK_RE = re.compile(r"\]\(([^)]+)\)")
-_SKIP_LINK = ("http://", "https://", "mailto:", "#", "<")
+_SKIP_LINK = ("http://", "https://", "mailto:", "#")
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.*\S)\s*$")
 
 
@@ -37,18 +37,44 @@ def _scan_secrets(content: str, policy: Dict[str, Any]) -> None:
             raise VerificationFailed(f"secret-shaped content matched /{pat}/")
 
 
+def check_evidence(policy: Dict[str, Any], *chunks: str) -> None:
+    """Reject secret-shaped prompt inputs before any runtime call."""
+    for chunk in chunks:
+        _scan_secrets(chunk, policy)
+
+
+def _check_covers(root: Path, target: str, content: str) -> None:
+    tracked = gitio.tracked_files(root)
+    for pattern in docs._covers_globs(content, strict=True):
+        if not any(docs._glob_to_re(pattern).match(path) for path in tracked):
+            raise VerificationFailed(f"unresolved covers entry in {target}: {pattern}")
+
+
 def _check_links(root: Path, target: str, content: str) -> None:
     doc_dir = (root / target).parent
+    resolved_root = root.resolve()
     for raw in _LINK_RE.findall(content):
         link = raw.strip()
+        if link.startswith("<") and link.endswith(">"):
+            link = link[1:-1].strip()
         if not link or link.startswith(_SKIP_LINK):
             continue
         path_part = link.split("#", 1)[0].split(" ", 1)[0]
         if not path_part:
             continue
         candidate = (doc_dir / path_part) if not path_part.startswith("/") else (root / path_part.lstrip("/"))
+        resolved = candidate.resolve(strict=False)
+        if resolved != resolved_root and resolved_root not in resolved.parents:
+            raise VerificationFailed(f"link escapes the repository in {target}: {link}")
         if not candidate.exists():
             raise VerificationFailed(f"broken link in {target}: {link}")
+
+
+def _check_create_examples(target: str, content: str, evidence: str) -> None:
+    for block in re.findall(r"```[^\n]*\n(.*?)```", content, re.DOTALL):
+        example = block.strip()
+        if example and example not in evidence:
+            raise VerificationFailed(f"{target}: created example is not present in the evidence")
 
 
 def check_write(
@@ -59,16 +85,26 @@ def check_write(
     is_create: bool,
     expected_hash: Optional[str],
     policy: Dict[str, Any],
+    evidence: str = "",
 ) -> None:
     """Raise a typed error if writing `content` to `target` would be unsafe."""
     if not docs.is_allowed(target, policy):
         raise NotAllowedPath(f"{target} is outside the documentation allowlist")
+    destination = docs.checked_path(root, target)
 
+    try:
+        content.encode("utf-8")
+    except UnicodeError as exc:
+        raise VerificationFailed(f"{target} is not valid UTF-8 text") from exc
     _scan_secrets(content, policy)
+    _check_covers(root, target, content)
+    if not gitio.working_tree_clean(root, [target]):
+        raise Conflict(f"{target} has staged or unstaged changes")
 
     if is_create:
         if (root / target).exists():
             raise Conflict(f"{target} already exists; refusing to create over it")
+        _check_create_examples(target, content, evidence)
     else:
         current = gitio.file_hash(root, target)
         if current is None:

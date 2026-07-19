@@ -1,9 +1,8 @@
 """Per-repo instructions: the editable SOP and the generated knowledge base.
 
 Both are Markdown files under ~/.choobi/repos/<checkout-id>/. The SOP is human-authored
-preferences that choobi *acts on* (its prose feeds the engine; its `allow_create` frontmatter
-gates new-document creation). The knowledge base is choobi's own derived map of the repo; it
-is generated but the user can edit and save it.
+preferences that choobi *acts on*. The knowledge base is a read-only derived view that Choobi
+regenerates from the repository.
 
 The knowledge traversal is one deterministic pass, no model call:
 
@@ -26,6 +25,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import yaml
 
 from . import baseline, config, docs, gitio, history
+from .errors import InvalidSnapshot, InvalidSop
 
 # Doc categories, in display order. Each is (label, path-predicate). First match wins.
 _CATEGORIES: List[Tuple[str, Any]] = [
@@ -68,9 +68,13 @@ def load_snapshot(repo_id: str) -> Optional[Set[str]]:
     if not p.exists():
         return None
     try:
-        return set(json.loads(p.read_text()).get("code", []))
-    except (json.JSONDecodeError, OSError):
-        return None
+        data = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        raise InvalidSnapshot(f"could not read repository snapshot: {exc}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("code"), list) \
+            or not all(isinstance(path, str) for path in data["code"]):
+        raise InvalidSnapshot("repository snapshot must contain a code path list")
+    return set(data["code"])
 
 
 def save_snapshot(repo_id: str, code_files: List[str], head: str) -> None:
@@ -81,8 +85,13 @@ def save_snapshot(repo_id: str, code_files: List[str], head: str) -> None:
 
 _SOP_TEMPLATE = """\
 ---
-# choobi may CREATE new documents in this repo, not only update existing ones.
-allow_create: true
+# Set this to true only after choosing this repository's document locations and owners.
+allow_create: false
+create_roots:
+  - docs/public/features/
+  - docs/public/reference/
+  - docs/internal/plans/
+  - docs/internal/features/
 ---
 # choobi SOP: {repo}
 
@@ -99,7 +108,7 @@ When a change introduces a new feature choobi identifies, or a big shift, choobi
    - internal: plans, such as build and implementation plans
    - internal: feature explanations for humans (how and why something works)
 2. If a relevant doc exists, it updates that doc.
-3. If none exists, it creates a new doc in the right category.
+3. If none exists, it reports a documentation gap unless `allow_create` is explicitly enabled.
 
 ## Suggested layout (choobi may write into these)
 
@@ -157,6 +166,8 @@ def read_sop(repo_id: str, repo_path: str) -> Tuple[str, bool]:
 
 
 def save_sop(repo_id: str, content: str) -> None:
+    fm, _ = _split_front_matter(content)
+    _create_roots(fm)
     p = sop_path(repo_id)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content)
@@ -170,27 +181,61 @@ def _split_front_matter(text: str) -> Tuple[Dict[str, Any], str]:
     """Return (frontmatter dict, body) for a doc that may start with a --- block."""
     if text.startswith("---\n"):
         end = text.find("\n---", 4)
-        if end != -1:
-            try:
-                fm = yaml.safe_load(text[4:end]) or {}
-            except yaml.YAMLError:
-                fm = {}
-            body = text[end + 4:].lstrip("\n")
-            return (fm if isinstance(fm, dict) else {}), body
+        if end == -1:
+            raise InvalidSop("SOP front matter has no closing ---")
+        try:
+            fm = yaml.safe_load(text[4:end]) or {}
+        except yaml.YAMLError as exc:
+            raise InvalidSop(f"invalid SOP front matter: {exc}") from exc
+        if not isinstance(fm, dict):
+            raise InvalidSop("SOP front matter must be a mapping")
+        body = text[end + 4:].lstrip("\n")
+        return fm, body
     return {}, text
+
+
+def _create_roots(front_matter: Dict[str, Any]) -> List[str]:
+    """Return canonical create roots, requiring them when creation is enabled."""
+    allow_create = front_matter.get("allow_create", False)
+    if not isinstance(allow_create, bool):
+        raise InvalidSop("allow_create must be true or false")
+    raw = front_matter.get("create_roots", [])
+    if not allow_create:
+        return []
+    if not isinstance(raw, list) or not raw:
+        raise InvalidSop("allow_create requires a non-empty create_roots list")
+    roots: List[str] = []
+    for value in raw:
+        if not isinstance(value, str):
+            raise InvalidSop("create_roots entries must be paths")
+        root = value.strip().rstrip("/")
+        path = Path(root)
+        if not root or path.is_absolute() or ".." in path.parts or path.as_posix() != root:
+            raise InvalidSop(f"invalid create root: {value}")
+        roots.append(root)
+    return roots
 
 
 def sop_allows_create(repo_id: str, repo_path: str) -> bool:
     content, _ = read_sop(repo_id, repo_path)
     fm, _ = _split_front_matter(content)
-    return bool(fm.get("allow_create", False))
+    return bool(_create_roots(fm))
+
+
+def sop_allows_create_path(repo_id: str, repo_path: str, target: str) -> bool:
+    content, _ = read_sop(repo_id, repo_path)
+    fm, _ = _split_front_matter(content)
+    parent = Path(target).parent
+    return any(parent == Path(root) or Path(root) in parent.parents for root in _create_roots(fm))
 
 
 def sop_prompt_body(repo_id: str, repo_path: str) -> str:
     """The SOP prose (frontmatter stripped) for injection into the engine prompt."""
     content, _ = read_sop(repo_id, repo_path)
-    _, body = _split_front_matter(content)
-    return body.strip()
+    fm, body = _split_front_matter(content)
+    roots = _create_roots(fm)
+    suffix = "\n\nAllowed create roots: " + ", ".join(roots) if roots else ""
+    return body.strip() + suffix
 
 
 def generate_knowledge(repo_id: str, repo_path: str) -> str:
@@ -266,10 +311,3 @@ def read_knowledge(repo_id: str, repo_path: str) -> str:
     if p.exists():
         return p.read_text()
     return generate_knowledge(repo_id, repo_path)
-
-
-def save_knowledge(repo_id: str, content: str) -> None:
-    """Persist a user-edited knowledge base (build-plan §7.3 user-pinned corrections)."""
-    p = knowledge_path(repo_id)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content)
