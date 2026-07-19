@@ -319,6 +319,58 @@ class HardeningTest(unittest.TestCase):
             (self.root / "docs/api.md").read_text(), "# Human committed after verification\n"
         )
 
+    def test_document_text_and_hash_are_one_snapshot(self) -> None:
+        response = json.dumps({
+            "disposition": "update", "target": "docs/api.md", "summary": "model update",
+            "content": "---\ncovers: src/api.py\n---\n# API\n\nModel from old body.\n",
+            "source_paths": [],
+        })
+        read_snapshot = docs.read_snapshot
+        raced = False
+
+        def commit_after_snapshot(root: Path, path: str) -> tuple[str, str]:
+            nonlocal raced
+            snapshot = read_snapshot(root, path)
+            if path == "docs/api.md" and not raced:
+                raced = True
+                (root / path).write_text(
+                    "---\ncovers: src/api.py\n---\n# API\n\nHuman committed body.\n"
+                )
+                _git(root, "add", path)
+                _git(root, "commit", "-qm", "human docs edit")
+            return snapshot
+
+        with mock.patch("choobi.engine.docs.read_snapshot", side_effect=commit_after_snapshot):
+            with self.assertRaises(Conflict):
+                engine.run_update(
+                    self.root,
+                    engine.UpdateRequest(targets=["docs/api.md"], detached=True,
+                                         instruction="update"),
+                    config.Config(onboarded=True), FakeRuntime(response),
+                )
+        self.assertIn("Human committed body.", (self.root / "docs/api.md").read_text())
+
+    def test_isolated_writer_rejects_a_concurrent_symlink_commit(self) -> None:
+        source = gitio.resolve(self.root, "HEAD")
+        expected = gitio.file_hash(self.root, "docs/api.md")
+        victim = Path(self.home.name) / "victim.md"
+        original = (self.root / "docs/api.md").read_text()
+        victim.write_text(original)
+        (self.root / "docs/api.md").unlink()
+        (self.root / "docs/api.md").symlink_to(victim)
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-qm", "replace doc with symlink")
+
+        with mock.patch("choobi.commitwriter.gitio.commit_paths",
+                        side_effect=RuntimeError("must not reach the writer")) as commit_paths:
+            with self.assertRaises(NotAllowedPath):
+                commitwriter.write_and_commit(
+                    self.root, {"docs/api.md": "# Model\n"}, "docs: reject symlink",
+                    source_commit=source, expected_hashes={"docs/api.md": expected},
+                )
+        commit_paths.assert_not_called()
+        self.assertEqual(victim.read_text(), original)
+
     def test_install_refuses_to_overwrite_an_unmanaged_hook(self) -> None:
         hook = self.root / ".git/hooks/post-commit"
         hook.write_text("#!/bin/sh\necho keep-me\n")

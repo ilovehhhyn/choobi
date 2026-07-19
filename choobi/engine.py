@@ -325,13 +325,18 @@ def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runt
         raise DocumentationGap("instruction given but no target or candidate document")
 
     # Snapshot current content + hashes for the concurrent-edit guard.
-    contents = {p: docs.checked_path(root, p).read_text(errors="replace")
-                if (root / p).exists() else ""
-                for p in resolved}
-    hashes = {p: gitio.file_hash(root, p) for p in resolved}
+    document_snapshots: Dict[str, Tuple[str, Optional[str]]] = {}
+    for path in resolved:
+        candidate = docs.checked_path(root, path)
+        document_snapshots[path] = (
+            docs.read_snapshot(root, path)
+            if candidate.exists() or candidate.is_symlink() else ("", None)
+        )
+    contents = {p: snapshot[0] for p, snapshot in document_snapshots.items()}
+    hashes = {p: snapshot[1] for p, snapshot in document_snapshots.items()}
 
     surface_contents = {
-        path: docs.checked_path(root, path).read_text(errors="replace") for path in surface
+        path: docs.read_snapshot(root, path)[0] for path in surface
     }
     sop_body = repos.sop_prompt_body(repo_id, repo_path)
     verify.check_evidence(
@@ -387,7 +392,7 @@ def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runt
     verify.check_write(root, target, content, is_create=is_create,
                        expected_hash=expected_hash, policy=policy,
                        evidence=diff_text + "\n" + (req.chat_context or "") + "\n" +
-                       "\n".join((root / path).read_text(errors="replace")
+                       "\n".join(docs.read_snapshot(root, path)[0]
                                   for path in sorted(selected_src)))
 
     message = _authoring_message(root, req, summary)

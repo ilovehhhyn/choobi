@@ -6,14 +6,18 @@ embeddings, no model call — that comes later in the engine.
 """
 from __future__ import annotations
 
+import errno
+import hashlib
+import os
 import re
+import stat
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
 from . import gitio
-from .errors import AmbiguousTarget, NotAllowedPath, TargetNotFound, VerificationFailed
+from .errors import AmbiguousTarget, Conflict, NotAllowedPath, TargetNotFound, VerificationFailed
 
 
 def checked_path(root: Path, rel_path: str) -> Path:
@@ -29,6 +33,52 @@ def checked_path(root: Path, rel_path: str) -> Path:
         if cursor.is_symlink():
             raise NotAllowedPath(f"{rel_path} resolves through a symlink")
     return candidate
+
+
+def read_snapshot(root: Path, rel_path: str) -> Tuple[str, str]:
+    """Read text and its SHA-256 from one regular-file descriptor."""
+    checked_path(root, rel_path)
+    parts = Path(rel_path).parts
+    if not parts:
+        raise NotAllowedPath("documentation path is empty")
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        raise VerificationFailed("platform cannot enforce symlink-safe repository reads")
+
+    parent_fd = os.open(root.resolve(), os.O_RDONLY | directory | nofollow)
+    file_fd = -1
+    try:
+        for part in parts[:-1]:
+            next_fd = os.open(part, os.O_RDONLY | directory | nofollow, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+        file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NONBLOCK | nofollow, dir_fd=parent_fd)
+        before = os.fstat(file_fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise NotAllowedPath(f"{rel_path} is not a regular repository file")
+        with os.fdopen(file_fd, "rb") as stream:
+            file_fd = -1
+            data = stream.read()
+            after = os.fstat(stream.fileno())
+        identity = lambda value: (
+            value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns,
+        )
+        if identity(before) != identity(after):
+            raise Conflict(f"{rel_path} changed while Choobi read it")
+        return data.decode(errors="replace"), hashlib.sha256(data).hexdigest()
+    except FileNotFoundError as exc:
+        raise TargetNotFound(f"{rel_path} no longer exists") from exc
+    except NotADirectoryError as exc:
+        raise NotAllowedPath(f"{rel_path} resolves through a non-directory") from exc
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise NotAllowedPath(f"{rel_path} resolves through a symlink") from exc
+        raise VerificationFailed(f"could not read repository file {rel_path}: {exc}") from exc
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        os.close(parent_fd)
 
 
 def _glob_to_re(pattern: str) -> "re.Pattern[str]":

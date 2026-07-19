@@ -106,14 +106,12 @@ def check_write(
             raise Conflict(f"{target} already exists; refusing to create over it")
         _check_create_examples(target, content, evidence)
     else:
-        current = gitio.file_hash(root, target)
-        if current is None:
-            raise Conflict(f"{target} vanished before write")
+        old_content, current = docs.read_snapshot(root, target)
         if expected_hash is not None and current != expected_hash:
             raise Conflict(f"{target} changed since choobi read it")
         # Surgical guard: an update may rename or remove at most ONE section (e.g. a signature
         # in a heading changed). Dropping several signals a wholesale rewrite (build-plan §5.5).
-        old_headings = _headings((root / target).read_text(errors="replace"))
+        old_headings = _headings(old_content)
         new_headings = set(_headings(content))
         dropped = [h for h in old_headings if h not in new_headings]
         if len(dropped) > 1:

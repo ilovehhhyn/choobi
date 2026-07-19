@@ -7,12 +7,14 @@ never a commit-message inspection.
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Dict, Optional
 
-from . import gitio
-from .errors import CommitFailed, Conflict
+from . import docs, gitio
+from .errors import CommitFailed, Conflict, NotAllowedPath, TargetNotFound
 
 GENERATING_ENV = {"CHOOBI_GENERATING": "1"}
 
@@ -20,13 +22,18 @@ GENERATING_ENV = {"CHOOBI_GENERATING": "1"}
 def _direct_commit(root: Path, writes: Dict[str, str], message: str) -> str:
     """Commit verified clean targets, restoring them if Git refuses the commit."""
     paths = sorted(writes)
-    originals = {rel: (root / rel).read_bytes() if (root / rel).exists() else None for rel in paths}
+    targets = {rel: docs.checked_path(root, rel) for rel in paths}
+    for rel, path in targets.items():
+        if os.path.lexists(path) and not stat.S_ISREG(path.lstat().st_mode):
+            raise CommitFailed(f"{rel} is not a regular repository file")
+    originals = {rel: path.read_bytes() if path.exists() else None
+                 for rel, path in targets.items()}
     written_hashes = {
         rel: hashlib.sha256(content.encode()).hexdigest() for rel, content in writes.items()
     }
     try:
         for rel, content in writes.items():
-            p = root / rel
+            p = targets[rel]
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content)
         return gitio.commit_paths(root, paths, message, GENERATING_ENV)
@@ -39,7 +46,11 @@ def _direct_commit(root: Path, writes: Dict[str, str], message: str) -> str:
         concurrent = []
         for rel, content in originals.items():
             path = root / rel
-            if gitio.file_hash(root, rel) != written_hashes[rel]:
+            try:
+                current_hash = docs.read_snapshot(root, rel)[1]
+            except (NotAllowedPath, TargetNotFound):
+                current_hash = None
+            if current_hash != written_hashes[rel]:
                 concurrent.append(rel)
             elif content is None:
                 path.unlink(missing_ok=True)
@@ -51,9 +62,16 @@ def _direct_commit(root: Path, writes: Dict[str, str], message: str) -> str:
 
 def _check_expected(root: Path, expected: Dict[str, Optional[str]]) -> None:
     paths = sorted(expected)
-    if not gitio.working_tree_clean(root, paths) or any(
-        gitio.file_hash(root, path) != expected[path] for path in paths
-    ):
+    if not gitio.working_tree_clean(root, paths):
+        raise Conflict("a documentation target changed after Choobi verified it")
+    for path in paths:
+        try:
+            actual = docs.read_snapshot(root, path)[1]
+        except TargetNotFound:
+            actual = None
+        if actual != expected[path]:
+            raise Conflict("a documentation target changed after Choobi verified it")
+    if not gitio.working_tree_clean(root, paths):
         raise Conflict("a documentation target changed after Choobi verified it")
 
 
