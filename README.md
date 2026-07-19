@@ -1,12 +1,9 @@
-# choobi
+# choobi - docs that follow your work 
 
-A local-first documentation agent that keeps engineering docs consistent with the work.
-When you commit code, or ask it to from your coding agent, choobi finds the affected
+Choobi is a doc writing agent that keeps engineering docs consistent with the code.
+When you commit code or summon choobi in your claude or codex CLI, choobi finds the affected
 document, edits the smallest relevant part, checks the write boundary, and commits a docs-only
 change that reuses your exact commit message. If nothing documented changed, it stays quiet.
-
-choobi does **not** ship a model. It drives one, called the *runtime*: the authenticated
-`claude` CLI already on your machine. See [Runtime vs. harness](#runtime-vs-harness).
 
 ## Contents
 
