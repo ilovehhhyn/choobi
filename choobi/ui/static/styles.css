@@ -11,22 +11,8 @@ body {
 .screen { height: 100vh; width: 100vw; display: flex; flex-direction: column; }
 .opt { opacity: 0.5; font-size: 10px; }
 
-/* --- placeholder cheese blob (hand-drawn choobi blob replaces this later) --- */
-.blob { width: 42px; height: 42px; position: relative; }
-.blob.cheese::before {
-  content: "";
-  position: absolute;
-  width: 6px; height: 6px;
-  left: 0; top: 0;
-  background: #e8b44a;
-  box-shadow:
-                    18px 0    #e8b44a,
-     12px 6px  #e8b44a, 18px 6px  #e8b44a, 24px 6px  #e8b44a,
-     6px 12px  #e8b44a, 12px 12px #e8b44a,                    24px 12px #e8b44a, 30px 12px #e8b44a,
-     0 18px    #e8b44a, 6px 18px  #e8b44a, 12px 18px #e8b44a, 18px 18px #e8b44a, 24px 18px #e8b44a, 30px 18px #e8b44a, 36px 18px #e8b44a,
-     0 24px    #e8b44a, 6px 24px  #e8b44a,                    18px 24px #e8b44a, 24px 24px #e8b44a, 30px 24px #e8b44a, 36px 24px #e8b44a,
-     0 30px    #e8b44a, 6px 30px  #e8b44a, 12px 30px #e8b44a, 18px 30px #e8b44a, 24px 30px #e8b44a, 30px 30px #e8b44a, 36px 30px #e8b44a;
-}
+.blob { width: 72px; height: 54px; object-fit: contain; }
+.choobi-face:not([src]) { visibility: hidden; }
 .blob.wiggle { animation: wiggle 0.6s steps(4, end); }
 @keyframes wiggle {
   0% { transform: translate(0,0) rotate(0); }
@@ -70,6 +56,7 @@ li.empty::before { content: ""; }
 li.clickable { cursor: pointer; }
 li.clickable::before { content: "▢"; position: absolute; left: 0; }
 li.clickable:hover { background: #f0f0f0; }
+li.clickable:focus { outline: 1px solid #000; outline-offset: -1px; }
 .hint { opacity: 0.5; font-size: 11px; margin-bottom: 8px; }
 .btn-row { display: flex; gap: 8px; margin-bottom: 12px; }
 .btn-row button { flex: 1; }

@@ -1,5 +1,5 @@
 // choobi window. Config & inspection only. Three tabs (instructions, style, changelog);
-// commands live behind the book icon; the terminal icon shows the runtime on hover.
+// commands live behind the book icon; the terminal icon and footer expose runtime readiness.
 "use strict";
 
 const TOKEN = new URLSearchParams(location.search).get("token") || "";
@@ -8,7 +8,10 @@ history.replaceState(null, "", location.pathname);
 async function api(path, opts) {
   opts = opts || {};
   opts.headers = Object.assign({ "X-Choobi-Token": TOKEN }, opts.headers || {});
-  return (await fetch(path, opts)).json();
+  const response = await fetch(path, opts);
+  const body = await response.json();
+  if (!response.ok || body.error) throw new Error(body.error || `request failed: ${response.status}`);
+  return body;
 }
 const post = (path, body) => api(path, {
   method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -17,12 +20,21 @@ const post = (path, body) => api(path, {
 const $ = (id) => document.getElementById(id);
 const baseName = (p) => (p || "").replace(/\/+$/, "").split("/").pop() || p;
 const when = (ts) => (ts || "").slice(0, 16).replace("T", " ");
+const FACE_COUNT = 18;
+const sessionFace = `/static/line-art/face-${1 + Math.floor(Math.random() * FACE_COUNT)}.png`;
+document.querySelectorAll(".choobi-face").forEach((face) => { face.src = sessionFace; });
 
 function showScreen(name) {
   for (const s of document.querySelectorAll(".screen")) s.classList.add("hidden");
   $("screen-" + name).classList.remove("hidden");
 }
 function setStatus(s) { $("status").textContent = s; }
+window.addEventListener("unhandledrejection", (event) => {
+  event.preventDefault();
+  const message = event.reason?.message || "request failed";
+  $("ob-error").textContent = message;
+  setStatus(`failed: ${message}`);
+});
 function wiggle() {
   document.querySelectorAll(".blob").forEach((b) => {
     b.classList.remove("wiggle"); void b.offsetWidth; b.classList.add("wiggle");
@@ -39,6 +51,17 @@ function showPanel(name, remember) {
 function showSub(panelId, subId) {
   $(panelId).querySelectorAll(".subview").forEach((v) => v.classList.add("hidden"));
   $(subId).classList.remove("hidden");
+}
+function makeClickable(node, action) {
+  node.tabIndex = 0;
+  node.setAttribute("role", "button");
+  node.onclick = action;
+  node.onkeydown = (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      action();
+    }
+  };
 }
 // repos that ran choobi init, ordered by when init was run
 function initedReposSorted(repos) {
@@ -58,7 +81,7 @@ async function loadInstrRepos() {
     const li = document.createElement("li");
     li.className = "clickable";
     li.textContent = baseName(r.path);
-    li.onclick = () => openInstrRepo(r);
+    makeClickable(li, () => openInstrRepo(r));
     ul.appendChild(li);
   }
 }
@@ -99,15 +122,10 @@ async function openKb() {
   $("kb-editor").value = r.content;
   $("kb-result").textContent = "";
 }
-async function saveKb() {
-  await post("/api/repo/knowledge/save", { repo: instrRepo.repo_id, content: $("kb-editor").value });
-  $("kb-result").textContent = "saved.";
-  wiggle();
-}
 async function regenKb() {
   const r = await post("/api/repo/knowledge/refresh", { repo: instrRepo.repo_id });
   $("kb-editor").value = r.content;
-  $("kb-result").textContent = "regenerated from the repo (unsaved edits replaced).";
+  $("kb-result").textContent = "regenerated from the repo.";
   wiggle();
 }
 
@@ -123,7 +141,7 @@ async function loadClRepos() {
     const li = document.createElement("li");
     li.className = "clickable";
     li.textContent = baseName(r.path);
-    li.onclick = () => openClRepo(r);
+    makeClickable(li, () => openClRepo(r));
     ul.appendChild(li);
   }
 }
@@ -137,8 +155,14 @@ async function openClRepo(r) {
     const li = document.createElement("li");
     li.className = "clickable " + rec.status;
     const title = rec.summary || (rec.status === "no_op" ? "stayed silent" : rec.reason || rec.status);
-    li.innerHTML = `<span class="log-title">${title}</span><br><span class="opt">${when(rec.ts)}</span>`;
-    li.onclick = () => openLog(rec.id);
+    const titleNode = document.createElement("span");
+    titleNode.className = "log-title";
+    titleNode.textContent = title;
+    const timeNode = document.createElement("span");
+    timeNode.className = "opt";
+    timeNode.textContent = when(rec.ts);
+    li.append(titleNode, document.createElement("br"), timeNode);
+    makeClickable(li, () => openLog(rec.id));
     ul.appendChild(li);
   }
   showSub("panel-changelog", "cl-logs");
@@ -168,8 +192,8 @@ async function openLog(id) {
 // ---------- STYLE ----------
 function styleStateLabel(isPersonal) {
   return isPersonal
-    ? "editing your personal style guide (~/.choobi/style.md)"
-    : "showing the built-in default — edit and save to make it your own";
+    ? "editing personal overrides (~/.choobi/style.md); built-in rules remain active"
+    : "built-in rules are active; add only personal exceptions below";
 }
 async function loadStyle() {
   const r = await api("/api/style");
@@ -198,15 +222,22 @@ async function loadCommands() {
   ul.innerHTML = "";
   for (const c of cmds) {
     const li = document.createElement("li");
-    li.innerHTML = `<span class="cmd">${c.command}</span><br><span class="desc">${c.summary}</span>`;
+    const command = document.createElement("span");
+    command.className = "cmd";
+    command.textContent = c.command;
+    const summary = document.createElement("span");
+    summary.className = "desc";
+    summary.textContent = c.summary;
+    li.append(command, document.createElement("br"), summary);
     ul.appendChild(li);
   }
 }
 
 // ---------- RUNTIME (terminal icon tooltip) ----------
 function setRuntimeTooltip(cfg) {
-  const model = cfg.agent === "codex" ? "codex default model" : "Claude Code default model";
-  $("icon-runtime").title = `runtime: ${cfg.agent} · model: ${model}`;
+  const label = `runtime: ${cfg.agent} · ${cfg.runtime_state}`;
+  $("icon-runtime").title = label;
+  $("icon-runtime").setAttribute("aria-label", label);
 }
 
 // ---------- wiring ----------
@@ -228,7 +259,6 @@ $("instr-sop-btn").onclick = openSop;
 $("instr-kb-btn").onclick = openKb;
 $("sop-save").onclick = saveSop;
 $("sop-reset").onclick = resetSop;
-$("kb-save").onclick = saveKb;
 $("kb-regen").onclick = regenKb;
 $("style-save").onclick = saveStyle;
 $("style-reset").onclick = resetStyle;
@@ -236,7 +266,7 @@ $("style-reset").onclick = resetStyle;
 $("ob-save").onclick = async () => {
   const name = $("ob-name").value.trim();
   if (!name) { $("ob-error").textContent = "name required"; return; }
-  await post("/api/onboard", { name, api_key: $("ob-key").value.trim(), agent: $("ob-agent").value });
+  await post("/api/onboard", { name, agent: "claude" });
   wiggle();
   enterHome(await api("/api/config"));
 };
@@ -246,7 +276,7 @@ function enterHome(cfg) {
   showScreen("home");
   showPanel("instructions");
   loadInstrRepos();
-  setStatus("ready");
+  setStatus(cfg.runtime_state === "ready" ? "ready" : `runtime ${cfg.runtime_state}; run choobi auth claude`);
 }
 
 async function init() {

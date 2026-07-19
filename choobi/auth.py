@@ -16,16 +16,22 @@ from . import config
 
 RUNTIMES: Dict[str, Dict[str, List[str]]] = {
     "claude": {"status": ["claude", "auth", "status"], "login": ["claude", "auth", "login"]},
-    "codex": {"status": ["codex", "login", "status"], "login": ["codex", "login"]},
 }
 _NEGATIVE = ("not logged in", "logged out", "not authenticated", "no credentials")
 
 
 def is_logged_in(runtime: str) -> Optional[bool]:
     """True/False if the runtime is authenticated, or None if its CLI isn't installed."""
+    if runtime not in RUNTIMES:
+        return None
     if shutil.which(runtime) is None:
         return None
-    proc = subprocess.run(RUNTIMES[runtime]["status"], capture_output=True, text=True)
+    try:
+        proc = subprocess.run(
+            RUNTIMES[runtime]["status"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
     out = (proc.stdout + proc.stderr).lower()
     if any(neg in out for neg in _NEGATIVE):
         return False
@@ -39,17 +45,19 @@ def _state_label(state: Optional[bool]) -> str:
 def render_status() -> str:
     cfg = config.Config.load()
     lines = [f"choobi runtime: {cfg.agent} (default)"]
+    if cfg.agent not in RUNTIMES:
+        lines.append(f"  {cfg.agent.ljust(7)} ✕ unsupported: runtime must be tool-free")
     for rt in RUNTIMES:
         mark = "   (default)" if rt == cfg.agent else ""
         lines.append(f"  {rt.ljust(7)} {_state_label(is_logged_in(rt))}{mark}")
-    lines.append("\nrun `choobi auth claude` or `choobi auth codex` to switch / log in.")
+    lines.append("\nrun `choobi auth claude` to select the supported runtime and log in.")
     return "\n".join(lines)
 
 
 def ensure(runtime: str) -> List[str]:
     """Set `runtime` as the default and make sure it's logged in. Returns notes."""
     if runtime not in RUNTIMES:
-        raise ValueError(f"unknown runtime '{runtime}' (choose claude or codex)")
+        raise ValueError(f"unsupported runtime '{runtime}' (choose claude)")
     cfg = config.Config.load()
     cfg.agent = runtime
     cfg.save()

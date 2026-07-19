@@ -13,12 +13,17 @@ from pathlib import Path
 from typing import List
 
 from . import agent_skill, config, gitio, history
+from .errors import HookConflict
+
+_MANAGED_MARKER = "# managed by choobi"
+_PERSISTED_ENV = ("CHOOBI_HOME",)
 
 
 def _exports() -> str:
-    """Bake any CHOOBI_* env so the detached process resolves the same home/runtime."""
+    """Bake only the storage root needed by the detached process."""
     return "".join(
-        f"export {k}={shlex.quote(v)}\n" for k, v in os.environ.items() if k.startswith("CHOOBI_")
+        f"export {key}={shlex.quote(os.environ[key])}\n"
+        for key in _PERSISTED_ENV if key in os.environ
     )
 
 
@@ -30,17 +35,23 @@ def install(root: Path) -> List[str]:
         hooks_dir = root / hooks_dir
     hooks_dir.mkdir(parents=True, exist_ok=True)
     hook = hooks_dir / "post-commit"
+    if hook.exists():
+        existing = hook.read_text(errors="replace")
+        if existing.strip() and _MANAGED_MARKER not in existing \
+                and "# choobi post-commit hook" not in existing:
+            raise HookConflict(f"{hook} already exists; Choobi will not overwrite it")
 
     log = config.logs_dir()
     log.mkdir(parents=True, exist_ok=True)
     script = (
         "#!/bin/sh\n"
+        f"{_MANAGED_MARKER}\n"
         "# choobi post-commit hook — returns immediately, runs the engine in the background.\n"
         'if [ -n "$CHOOBI_GENERATING" ]; then exit 0; fi\n'
         f"{_exports()}"
         "SHA=$(git rev-parse HEAD)\n"
         f'( {config.invocation()} update --commit "$SHA" --trigger post_commit '
-        f'>> "{log / "hook.log"}" 2>&1 & ) >/dev/null 2>&1\n'
+        f'>> {shlex.quote(str(log / "hook.log"))} 2>&1 & ) >/dev/null 2>&1\n'
         "exit 0\n"
     )
     hook.write_text(script)

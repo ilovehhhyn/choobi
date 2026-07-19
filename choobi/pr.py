@@ -9,8 +9,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from . import config, gitio, history
-from .errors import ChoobiError
+from . import config, gitio, history, locking
+from .errors import ChoobiError, PendingDocsUpdate
 
 ANNOTATION = "choobi updated docs."
 
@@ -29,17 +29,33 @@ def _gh(root: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
-def _has_docs_commit(root: Path) -> bool:
+def _has_docs_commit(root: Path, base: str, head: str) -> bool:
     repo_id = config.checkout_id(gitio.common_dir(root))
-    return any(r["status"] == "committed" for r in history.recent(repo_id, limit=200))
+    for record in history.recent(repo_id, limit=200):
+        commit = record.get("docs_commit")
+        if commit and gitio.is_ancestor(root, commit, head) \
+                and not gitio.is_ancestor(root, commit, base):
+            return True
+    return False
 
 
 def create(root: Path) -> str:
     """Create the PR and, if a docs commit exists, append the annotation. Returns the URL."""
-    url = _gh(root, "pr", "create", "--fill")
-    if _has_docs_commit(root):
-        body = _gh(root, "pr", "view", "--json", "body", "-q", ".body")
-        if ANNOTATION not in body:
-            new_body = (body + "\n\n" + ANNOTATION).strip()
-            _gh(root, "pr", "edit", "--body", new_body)
-    return url
+    repo_id = config.checkout_id(gitio.common_dir(root))
+    lock = locking.RepoLock(repo_id)
+    if not lock.acquire():
+        raise PendingDocsUpdate("wait for the active documentation update before creating a PR")
+    try:
+        url = _gh(root, "pr", "create", "--fill")
+        bounds = _gh(root, "pr", "view", "--json", "baseRefOid,headRefOid", "-q",
+                     '.baseRefOid + " " + .headRefOid').split()
+        if len(bounds) != 2:
+            raise ChoobiError("gh returned an invalid PR range")
+        if _has_docs_commit(root, bounds[0], bounds[1]):
+            body = _gh(root, "pr", "view", "--json", "body", "-q", ".body")
+            if ANNOTATION not in body:
+                new_body = (body + "\n\n" + ANNOTATION).strip()
+                _gh(root, "pr", "edit", "--body", new_body)
+        return url
+    finally:
+        lock.release()

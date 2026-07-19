@@ -26,14 +26,13 @@ description: >-
   Use when the user says "choobi update", or asks to update / sync a document (README,
   API docs, build plan, design doc, PRD) based on what was decided or what changed in
   this chat, or wants the docs kept consistent with recent work.
-allowed-tools: Bash(choobi *), Bash(printf *), Bash(PYTHONPATH=* *)
 ---
 
 # choobi — update docs from this conversation
 
 choobi is a local documentation agent. Given a code diff and/or conversation context it
-edits the smallest relevant part of a document, verifies it (links resolve, no secrets,
-referenced paths exist), and commits a docs-only change. **You do not edit the document
+edits the smallest relevant part of a document, checks deterministic path, link, secret, and
+concurrency invariants, and commits a docs-only change. **You do not edit the document
 yourself — choobi does the editing and committing.** Your job is to hand choobi the right
 target and the right context, then report its result.
 
@@ -51,18 +50,22 @@ target and the right context, then report its result.
 
 3. **Scope.** Pick exactly one:
    - a specific commit is the source → `--commit <sha>` (choobi reuses that commit's message);
-   - the change is only in the working tree → `--working`;
+   - the change is only in the working tree → `--working --detached`;
    - the update is driven purely by this conversation, with no single commit → `--detached`
      (choobi authors its own commit message).
 
-4. **Run choobi**, piping the distilled context on stdin with `--chat`:
+4. **Run choobi**, passing the distilled context on stdin with a quoted heredoc:
 
-   ```bash
-   printf '%s' 'DECISION: retries now default to 3 attempts with backoff
-   CHANGED: src/api.py retry()' | {CHOOBI} update docs/api.md --chat --detached -- 'document the new retry default'
-   ```
+```bash
+{CHOOBI} update docs/api.md --chat --detached -- 'document the new retry default' <<'CHOOBI_CONTEXT'
+DECISION: retries now default to 3 attempts with backoff
+CHANGED: src/api.py retry()
+CHOOBI_CONTEXT
+```
 
-   Substitute the real target, scope flag, piped context, and the instruction after `--`.
+   Substitute the real target, scope flag, context, and instruction. Keep the heredoc delimiter
+   quoted, and shell-quote every target and instruction argument. Never interpolate conversation
+   text into shell syntax.
 
 5. **Report** choobi's output to the user verbatim — one line such as
    `choobi just updated the docs — …`, or its typed failure reason.
@@ -70,7 +73,8 @@ target and the right context, then report its result.
 ## Rules
 - Never invent a target. If choobi returns `ambiguous_target` or `target_not_found`, ask
   the user which document they mean.
-- One document per run. Run choobi again for a second document.
+- One document per run. If several documents may be affected, name the canonical owner and report
+  the remaining documentation gap instead of silently implying complete coverage.
 - Do not paste secrets into the context; choobi also scans outputs and refuses
   secret-shaped content.
 """

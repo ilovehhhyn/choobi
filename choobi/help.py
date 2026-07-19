@@ -26,18 +26,18 @@ COMMANDS: List[Command] = [
                "(~/.claude/skills, ~/.codex/skills, ~/.agents/skills) so you can say "
                "\"choobi update <doc> based on …\" inside Claude Code or Codex and it acts "
                "on the conversation."},
-    {"command": "choobi auth [claude|codex]",
+    {"command": "choobi auth [claude]",
      "summary": "pick the runtime model and log it in",
-     "detail": "With no argument, shows which runtimes are logged in and which is the "
-               "default. With claude or codex, sets it as the default and, if you are not "
+     "detail": "With no argument, shows runtime status. With claude, sets it as the default and, if you are not "
                "logged in, launches that runtime's own login (choobi delegates auth; it "
                "never stores your credentials)."},
-    {"command": "choobi update [DOC...] [SCOPE] [-- INSTRUCTION]",
+    {"command": "choobi update [DOC] SCOPE [--chat] [-- INSTRUCTION]",
      "summary": "run the documentation engine",
      "detail": "The one engine verb. DOC pins a target (path or fuzzy name); omit it to let "
-               "choobi infer from the diff. SCOPE is one of --commit <sha>, --range <a..b>, "
-               "--staged, --working, --chat, or --detached. Text after -- is a natural-language "
-               "instruction, e.g. choobi update docs/api.md --detached -- \"clarify the backoff\"."},
+               "choobi infer from the diff. SCOPE is --commit <sha>, --range <a..b>, "
+               "--pr <number>, or --detached. Uncommitted input uses --detached --staged or "
+               "--detached --working. --chat reads conversation evidence from stdin. Text after "
+               "-- is an instruction, e.g. choobi update docs/api.md --detached -- \"clarify the backoff\"."},
     {"command": "choobi status",
      "summary": "show pending / failed / no-op jobs and the repo checkpoint",
      "detail": "A deterministic read of local state. No model call."},
@@ -51,14 +51,14 @@ COMMANDS: List[Command] = [
                "repo, --status filters to committed / no_op / failed."},
     {"command": "choobi show <id>",
      "summary": "show one changelog entry in full",
-     "detail": "Prints an activity record's commits, summary, verification, and the exact "
+     "detail": "Prints an activity record's commits, summary, reason, and the exact "
                "documentation patch."},
     {"command": "choobi style",
      "summary": "print the resolved style guide",
-     "detail": "Shows the effective style (personal override if present, else the baseline)."},
+     "detail": "Shows the immutable baseline followed by any personal overrides."},
     {"command": "choobi pr create",
      "summary": "create a PR via gh and annotate it",
-     "detail": "Drains pending docs updates, opens the PR with the authenticated gh CLI, and "
+     "detail": "Refuses while a docs update is active, opens the PR with the authenticated gh CLI, and "
                "inserts the line 'choobi updated docs.' when a docs commit exists."},
     {"command": "choobi help [COMMAND]",
      "summary": "this command reference",
