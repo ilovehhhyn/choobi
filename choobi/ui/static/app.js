@@ -20,6 +20,9 @@ const post = (path, body) => api(path, {
 const $ = (id) => document.getElementById(id);
 const baseName = (p) => (p || "").replace(/\/+$/, "").split("/").pop() || p;
 const when = (ts) => (ts || "").slice(0, 16).replace("T", " ");
+const FACE_COUNT = 18;
+const sessionFace = `/static/line-art/face-${1 + Math.floor(Math.random() * FACE_COUNT)}.png`;
+document.querySelectorAll(".choobi-face").forEach((face) => { face.src = sessionFace; });
 
 function showScreen(name) {
   for (const s of document.querySelectorAll(".screen")) s.classList.add("hidden");

@@ -67,6 +67,30 @@ class HardeningTest(unittest.TestCase):
         self.assertTrue((package_dir / "baseline/style.md").is_file())
         self.assertTrue((package_dir / "baseline/policy.yaml").is_file())
 
+    def test_ui_uses_one_random_line_art_face_per_session(self) -> None:
+        static = Path(ui_server.__file__).resolve().parent / "static"
+        faces = sorted((static / "line-art").glob("face-*.png"))
+        html = (static / "index.html").read_text()
+        app = (static / "app.js").read_text()
+        styles = (static / "styles.css").read_text()
+
+        self.assertEqual(len(faces), 18)
+        self.assertEqual(html.count('class="blob choobi-face"'), 2)
+        self.assertNotIn("cheese", html + styles)
+        self.assertEqual(app.count("Math.floor(Math.random() * FACE_COUNT)"), 1)
+        self.assertIn('querySelectorAll(".choobi-face")', app)
+
+        httpd, url = ui_server.start_server()
+        parsed = urlparse(url)
+        face_url = f"{parsed.scheme}://{parsed.netloc}/static/line-art/face-1.png"
+        try:
+            with urllib.request.urlopen(face_url) as response:
+                self.assertEqual(response.headers.get_content_type(), "image/png")
+                self.assertTrue(response.read().startswith(b"\x89PNG\r\n\x1a\n"))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
     def test_style_api_edits_only_personal_overrides(self) -> None:
         httpd, url = ui_server.start_server()
         parsed = urlparse(url)

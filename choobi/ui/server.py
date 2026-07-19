@@ -20,7 +20,8 @@ from ..errors import ChoobiError, RuntimeUnavailable
 _STATIC = Path(__file__).resolve().parent / "static"
 _TOKEN = secrets.token_urlsafe(24)
 
-_CTYPES = {".html": "text/html", ".css": "text/css", ".js": "text/javascript"}
+_CTYPES = {".html": "text/html", ".css": "text/css", ".js": "text/javascript",
+           ".png": "image/png"}
 
 
 def _repo_root() -> Optional[Path]:

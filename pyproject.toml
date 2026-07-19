@@ -16,4 +16,4 @@ choobi = "choobi.cli:main"
 packages = ["choobi", "choobi.ui"]
 
 [tool.setuptools.package-data]
-"choobi" = ["baseline/*", "ui/static/*"]
+"choobi" = ["baseline/*", "ui/static/*", "ui/static/line-art/*"]
