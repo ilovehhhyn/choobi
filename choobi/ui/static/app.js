@@ -254,11 +254,46 @@ async function loadCommands() {
   }
 }
 
-// ---------- RUNTIME (terminal icon tooltip) ----------
+// ---------- RUNTIME (terminal icon tooltip + selector) ----------
 function setRuntimeTooltip(cfg) {
   const label = `runtime: ${cfg.agent} · ${cfg.runtime_state}`;
   $("icon-runtime").title = label;
   $("icon-runtime").setAttribute("aria-label", label);
+}
+
+function renderRuntimePanel(cfg) {
+  setRuntimeTooltip(cfg);
+  $("runtime-current").textContent = `current runtime: ${cfg.agent} · ${cfg.runtime_state}`;
+  for (const button of document.querySelectorAll("[data-runtime-choice]")) {
+    const runtime = button.dataset.runtimeChoice;
+    const active = runtime === cfg.agent;
+    button.classList.toggle("active", active);
+    button.textContent = active
+      ? (cfg.runtime_state === "ready" ? `${runtime} (current)` : `sign in with ${runtime}`)
+      : `use ${runtime}`;
+    button.disabled = active && cfg.runtime_state === "ready";
+  }
+}
+
+async function loadRuntimePanel() {
+  const cfg = await api("/api/config");
+  renderRuntimePanel(cfg);
+  $("runtime-result").textContent = "";
+}
+
+async function switchRuntime(runtime) {
+  const buttons = [...document.querySelectorAll("[data-runtime-choice]")];
+  buttons.forEach((button) => { button.disabled = true; });
+  $("runtime-result").textContent = `opening ${runtime} sign in in your browser if needed…`;
+  try {
+    const result = await post("/api/runtime/select", { agent: runtime });
+    renderRuntimePanel(result);
+    $("runtime-result").textContent = result.notes.join("\n");
+    if (result.ok) wiggle();
+  } catch (error) {
+    $("runtime-result").textContent = error.message || "runtime switch failed";
+    buttons.forEach((button) => { button.disabled = false; });
+  }
 }
 
 // ---------- wiring ----------
@@ -284,6 +319,16 @@ document.querySelectorAll("[data-back]").forEach((b) => {
 });
 $("icon-commands").onclick = () => { showPanel("commands", false); loadCommands(); };
 $("commands-back").onclick = () => showPanel(activePanel, false);
+$("icon-runtime").onclick = () => {
+  showPanel("runtime", false);
+  loadRuntimePanel().catch((error) => {
+    $("runtime-result").textContent = error.message || "could not load runtime settings";
+  });
+};
+$("runtime-back").onclick = () => showPanel(activePanel, false);
+document.querySelectorAll("[data-runtime-choice]").forEach((button) => {
+  button.onclick = () => switchRuntime(button.dataset.runtimeChoice);
+});
 $("instr-sop-btn").onclick = openSop;
 $("instr-kb-btn").onclick = openKb;
 $("sop-save").onclick = saveSop;
@@ -291,6 +336,12 @@ $("sop-reset").onclick = resetSop;
 $("kb-regen").onclick = regenKb;
 $("style-save").onclick = saveStyle;
 $("style-reset").onclick = resetStyle;
+
+function syncOnboardRuntime() {
+  $("ob-save").textContent = `sign in with ${$("ob-runtime").value}`;
+}
+
+$("ob-runtime").onchange = syncOnboardRuntime;
 
 $("ob-save").onclick = async () => {
   const name = $("ob-name").value.trim();
@@ -325,6 +376,7 @@ async function init() {
   if ([...$("ob-runtime").options].some((option) => option.value === cfg.agent)) {
     $("ob-runtime").value = cfg.agent;
   }
+  syncOnboardRuntime();
   if (!cfg.onboarded) { showScreen("onboard"); return; }
   enterHome(cfg);
 }

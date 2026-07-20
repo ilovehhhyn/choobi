@@ -72,6 +72,7 @@ class ChoobiTest(unittest.TestCase):
         self.assertTrue(docs.is_allowed("docs/api.md", pol))
         self.assertTrue(docs.is_allowed("docs/deep/nested/x.md", pol))
         self.assertTrue(docs.is_allowed("README.md", pol))
+        self.assertTrue(docs.is_allowed("HOW_CHOOBI_WORKS.md", pol))
         self.assertFalse(docs.is_allowed("src/api.py", pol))
         self.assertFalse(docs.is_allowed("docs/api.txt", pol))
 

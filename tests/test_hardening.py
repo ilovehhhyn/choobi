@@ -20,9 +20,9 @@ from choobi import (
 )
 from choobi.errors import (
     ChoobiError, CommitFailed, Conflict, HookConflict, InvalidScope, InvalidSop, NotAllowedPath,
-    PendingDocsUpdate, RuntimeOutputInvalid, RuntimeUnavailable, VerificationFailed,
+    PendingDocsUpdate, RuntimeOutputInvalid, VerificationFailed,
 )
-from choobi.runtime import ClaudeCliRuntime, FakeRuntime, get_runtime
+from choobi.runtime import ClaudeCliRuntime, CodexCliRuntime, FakeRuntime, get_runtime
 from choobi.ui import server as ui_server
 
 
@@ -84,6 +84,11 @@ class HardeningTest(unittest.TestCase):
         self.assertIn('querySelectorAll(".choobi-face")', app)
         self.assertIn('id="ob-runtime"', html)
         self.assertIn("sign in with claude", html)
+        self.assertIn('<option value="codex">', html)
+        self.assertIn('id="panel-runtime"', html)
+        self.assertIn('data-runtime-choice="claude"', html)
+        self.assertIn('data-runtime-choice="codex"', html)
+        self.assertIn('$("icon-runtime").onclick', app)
         self.assertNotIn("<footer", html)
         self.assertIn('aria-label="close commands">×</button>', html.replace("\n", " "))
         self.assertIn("header { padding: 14px 12px 8px; border-bottom: 1px solid #000", styles)
@@ -106,21 +111,61 @@ class HardeningTest(unittest.TestCase):
         endpoint = f"{parsed.scheme}://{parsed.netloc}/api/onboard?{parsed.query}"
         request = urllib.request.Request(
             endpoint,
-            data=json.dumps({"name": "Helen", "agent": "claude"}).encode(),
+            data=json.dumps({"name": "Helen", "agent": "codex"}).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+
+        def select(runtime: str) -> auth.AuthSelection:
+            cfg = config.Config.load()
+            cfg.agent = runtime
+            cfg.save()
+            return auth.AuthSelection(
+                requested=runtime, active=runtime, ready=True, switched=True,
+                notes=["logged in"],
+            )
+
         try:
-            with mock.patch("choobi.ui.server.auth.ensure", return_value=["logged in"]), \
+            with mock.patch("choobi.ui.server.auth.select", side_effect=select), \
                  mock.patch("choobi.ui.server.auth.is_logged_in", return_value=True), \
                  urllib.request.urlopen(request) as response:
                 payload = json.load(response)
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["runtime_state"], "ready")
+            self.assertEqual(payload["runtimes"], ["claude", "codex"])
             cfg = config.Config.load()
             self.assertEqual(cfg.name, "Helen")
-            self.assertEqual(cfg.agent, "claude")
+            self.assertEqual(cfg.agent, "codex")
             self.assertTrue(cfg.onboarded)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_runtime_api_switches_only_to_a_ready_runtime(self) -> None:
+        config.Config(name="Helen", agent="claude", onboarded=True).save()
+        httpd, url = ui_server.start_server()
+        parsed = urlparse(url)
+        endpoint = f"{parsed.scheme}://{parsed.netloc}/api/runtime/select?{parsed.query}"
+        request = urllib.request.Request(
+            endpoint, data=json.dumps({"agent": "codex"}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+
+        def select(runtime: str) -> auth.AuthSelection:
+            cfg = config.Config.load()
+            cfg.agent = runtime
+            cfg.save()
+            return auth.AuthSelection(runtime, runtime, True, True, ["runtime set to codex."])
+
+        try:
+            with mock.patch("choobi.ui.server.auth.select", side_effect=select), \
+                 mock.patch("choobi.ui.server.auth.is_logged_in", return_value=True), \
+                 urllib.request.urlopen(request) as response:
+                payload = json.load(response)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["agent"], "codex")
+            self.assertEqual(payload["runtime_state"], "ready")
+            self.assertEqual(config.Config.load().agent, "codex")
         finally:
             httpd.shutdown()
             httpd.server_close()
@@ -611,6 +656,39 @@ class HardeningTest(unittest.TestCase):
                         side_effect=subprocess.TimeoutExpired(["claude"], 10)):
             self.assertIsNone(auth.is_logged_in("claude"))
 
+    def test_auth_supports_both_runtime_commands(self) -> None:
+        self.assertEqual(
+            auth.RUNTIMES["claude"]["login"], ["claude", "auth", "login"]
+        )
+        self.assertEqual(auth.RUNTIMES["codex"]["status"], ["codex", "login", "status"])
+        self.assertEqual(auth.RUNTIMES["codex"]["login"], ["codex", "login"])
+        args = cli._build_parser().parse_args(["auth", "codex"])
+        self.assertEqual(args.runtime, "codex")
+
+    def test_runtime_switch_activates_only_after_successful_login(self) -> None:
+        config.Config(agent="claude", onboarded=True).save()
+        with mock.patch("choobi.auth.shutil.which", return_value="/codex"), \
+             mock.patch("choobi.auth.is_logged_in", side_effect=[False, True]), \
+             mock.patch("choobi.auth.subprocess.run") as run:
+            selection = auth.select("codex")
+        self.assertTrue(selection.ready)
+        self.assertTrue(selection.switched)
+        self.assertEqual(selection.active, "codex")
+        self.assertEqual(config.Config.load().agent, "codex")
+        run.assert_called_once_with(["codex", "login"])
+
+    def test_failed_runtime_switch_preserves_the_active_runtime(self) -> None:
+        config.Config(agent="claude", onboarded=True).save()
+        with mock.patch("choobi.auth.shutil.which", return_value="/codex"), \
+             mock.patch("choobi.auth.is_logged_in", side_effect=[False, False]), \
+             mock.patch("choobi.auth.subprocess.run"):
+            selection = auth.select("codex")
+        self.assertFalse(selection.ready)
+        self.assertFalse(selection.switched)
+        self.assertEqual(selection.active, "claude")
+        self.assertEqual(config.Config.load().agent, "claude")
+        self.assertIn("still using claude", selection.notes[0])
+
     def test_secret_diff_never_reaches_runtime(self) -> None:
         (self.root / "src/api.py").write_text(
             'TOKEN = "sk-ant-1234567890abcdefghijkl"\n'
@@ -759,9 +837,36 @@ class HardeningTest(unittest.TestCase):
         self.assertIn("<<'CHOOBI_CONTEXT'", body)
         self.assertIn("\nCHOOBI_CONTEXT\n", body)
 
-    def test_runtime_rejects_tool_capable_codex_adapter(self) -> None:
-        with self.assertRaises(RuntimeUnavailable):
-            get_runtime(config.Config(agent="codex"))
+    def test_runtime_selects_codex_adapter(self) -> None:
+        self.assertIsInstance(get_runtime(config.Config(agent="codex")), CodexCliRuntime)
+
+    def test_codex_runtime_is_ephemeral_read_only_and_uses_schema(self) -> None:
+        schema = {"type": "object", "properties": {"action": {"type": "string"}}}
+        captured = {}
+
+        def run(command: list, **kwargs: object) -> subprocess.CompletedProcess:
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            schema_path = Path(command[command.index("--output-schema") + 1])
+            self.assertEqual(json.loads(schema_path.read_text()), schema)
+            output_path = Path(command[command.index("--output-last-message") + 1])
+            output_path.write_text('{"action":"none"}')
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with mock.patch("choobi.runtime.shutil.which", return_value="/codex"), \
+             mock.patch("choobi.runtime.subprocess.run", side_effect=run):
+            result = CodexCliRuntime().complete("evidence", "contract", schema=schema)
+        self.assertEqual(result, '{"action":"none"}')
+        command = captured["command"]
+        self.assertNotIn("evidence", command)
+        self.assertIn("--ephemeral", command)
+        self.assertIn("--ignore-user-config", command)
+        self.assertIn("--ignore-rules", command)
+        self.assertIn("read-only", command)
+        self.assertIn('shell_environment_policy.inherit="none"', command)
+        self.assertIn("--output-schema", command)
+        self.assertIn("contract", captured["kwargs"]["input"])
+        self.assertIn("evidence", captured["kwargs"]["input"])
 
     def test_claude_runtime_disables_tools_and_uses_schema(self) -> None:
         envelope = subprocess.CompletedProcess(

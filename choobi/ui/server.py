@@ -31,6 +31,22 @@ def _repo_root() -> Optional[Path]:
         return None
 
 
+def _runtime_state(runtime: str) -> str:
+    state = auth.is_logged_in(runtime)
+    return {True: "ready", False: "not logged in", None: "not installed"}[state]
+
+
+def _runtime_payload(selection: "Optional[auth.AuthSelection]" = None) -> Dict[str, Any]:
+    cfg = config.Config.load()
+    return {
+        "ok": selection.ready if selection else True,
+        "agent": cfg.agent,
+        "runtime_state": _runtime_state(cfg.agent),
+        "runtimes": list(auth.RUNTIMES),
+        "notes": selection.notes if selection else [],
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_: Any) -> None:  # silence access log
         pass
@@ -94,11 +110,10 @@ class Handler(BaseHTTPRequestHandler):
         cfg = config.Config.load()
         root = _repo_root()
         if path == "/api/config":
-            runtime_state = auth.is_logged_in(cfg.agent)
             return self._json({"name": cfg.name, "onboarded": cfg.onboarded,
                                "mode": cfg.mode, "agent": cfg.agent,
-                               "runtime_state": ({True: "ready", False: "not logged in",
-                                                  None: "not installed"}[runtime_state]),
+                               "runtime_state": _runtime_state(cfg.agent),
+                               "runtimes": list(auth.RUNTIMES),
                                "has_repo": root is not None,
                                "repo": str(root) if root else ""})
         if path == "/api/commands":
@@ -130,21 +145,26 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/onboard":
             runtime = payload.get("agent", "").strip()
             if runtime not in auth.RUNTIMES:
-                raise RuntimeUnavailable("choose a supported tool-free runtime")
+                raise RuntimeUnavailable("choose claude or codex")
             name = payload.get("name", "").strip()
+            if not name:
+                raise RuntimeError("name required")
             cfg.name = name
-            cfg.agent = runtime
             cfg.onboarded = False
             cfg.save()
-            notes = auth.ensure(runtime)
-            ready = auth.is_logged_in(runtime) is True
+            selection = auth.select(runtime)
             cfg = config.Config.load()
             cfg.name = name
-            cfg.agent = runtime
-            cfg.onboarded = ready
+            cfg.onboarded = selection.ready
             cfg.save()
-            return self._json({"ok": ready, "runtime_state": "ready" if ready else
-                               "not logged in", "notes": notes})
+            result = _runtime_payload(selection)
+            result["onboarded"] = cfg.onboarded
+            return self._json(result)
+        if path == "/api/runtime/select":
+            runtime = payload.get("agent", "").strip()
+            if runtime not in auth.RUNTIMES:
+                raise RuntimeUnavailable("choose claude or codex")
+            return self._json(_runtime_payload(auth.select(runtime)))
         if path == "/api/style/save":
             p = config.personal_style_path()
             content = payload.get("content", "")

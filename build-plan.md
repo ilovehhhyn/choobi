@@ -5,9 +5,9 @@
 > completion.
 
 The current build has the one-document engine, a full-context document-ownership pass with
-complete-document batching, a tool-free Claude runtime with native schemas, secret and
-write-boundary checks, isolated writes, local history, a configuration UI, the agent skill, and
-accurate PR annotation.
+complete-document batching, selectable Claude and Codex CLI runtimes with native schemas, secret
+and write-boundary checks, isolated writes, local history, a configuration UI, the agent skill,
+and accurate PR annotation.
 It does not yet have a durable event queue, ordered crash recovery, completion notifications,
 multi-document reconciliation, runtime token accounting, or a historical-repository benchmark.
 Those are explicit release gaps. V2 remains the shared repository direction in §12.
@@ -237,7 +237,7 @@ There is exactly one engine verb, `update`. Everything else is deterministic plu
 choobi                     open the local window            (alias: choobi ui)
 choobi init                install post-commit hook + project agent skill (per repo)
 choobi install             install the coding-agent skill into Claude Code and Codex (user)
-choobi auth [claude]       select the tool-free runtime and log in through its CLI
+choobi auth [claude|codex] authenticate and select Choobi's one active runtime
 choobi update …            run the documentation engine     (see 4.2)
 choobi status              show pending, failed, and no-op jobs and repo checkpoints
 choobi docs                list the writable docs in this repo and what each covers
@@ -298,10 +298,18 @@ Every scope still passes the same relevance gate, surgical-edit, verification, c
 pipeline. `--detached` changes only message authoring, not the write boundary.
 
 Harness wrappers obtain active conversation and PR context because the harness owns that data.
-**As built**, the same portable skill supports Claude Code and Codex as harnesses. Claude is the
-only runtime because its CLI can enforce a native system prompt, JSON schema, no tools, no custom
-instructions, and no session persistence. A future runtime must meet that boundary rather than
-silently running as a tool-capable agent.
+**As built**, the same portable skill supports Claude Code and Codex as harnesses, and either CLI
+can also be selected as Choobi's runtime. Claude uses a native system prompt and JSON schema with
+tools, custom instructions, and session persistence disabled. Codex runs ephemerally in an empty
+read-only temporary workspace with user config and exec rules ignored, approvals disabled, and a
+native output schema. Tool subprocesses inherit no environment variables. Because Codex does not
+expose a separate system-prompt flag, the immutable contract and untrusted evidence are explicitly
+delimited in one input and the adapter instructs it not to call tools.
+
+`config.json` stores exactly one active runtime. A runtime switch is transactional: Choobi checks
+or launches the requested CLI's browser login and persists the new selection only after status is
+ready. Failed authentication leaves the previous runtime active. Choobi does not log out the other
+CLI's independently managed account session.
 
 ### 4.3 `choobi status` output
 
@@ -429,7 +437,8 @@ shows whether the narrow gate or the model made the decision.
 After ownership selection, the editing disposition receives the complete cross-file diff, the one
 chosen document in full, structured placement roots, changed-file evidence, chat decisions, and
 style/SOP context. Each prompt has one hard byte ceiling and fails rather than dropping evidence.
-The runtime returns one native schema-constrained object and cannot use tools.
+The runtime returns one native schema-constrained object. The Claude adapter disables tools; the
+Codex adapter runs in an empty read-only workspace and explicitly forbids tool use in its input.
 
 ### 5.5 Surgical edit
 
@@ -592,8 +601,9 @@ happen through commits, the CLI, and the agent skill.
 
 ### 8.0 Screens
 
-**Onboarding.** On first launch, choobi asks for the user's name and shows the supported tool-free
-Claude runtime. Runtime authentication stays in the Claude CLI; Choobi never stores an API key.
+**Onboarding.** On first launch, choobi asks for the user's name and lets them select Claude or
+Codex. The selected CLI owns its browser authentication; Choobi stores no runtime credential and
+continues only after one selected runtime reports ready.
 
 **Home.** Three tabs, plus two icons in the top right:
 
@@ -606,7 +616,8 @@ Claude runtime. Runtime authentication stays in the Claude CLI; Choobi never sto
   full detail (see §8.1).
 - **book icon** — the command reference, rendered from the same source as `choobi help` so the
   panel and CLI cannot drift.
-- **terminal icon and footer** — visible and accessible runtime readiness.
+- **terminal icon** — hover text shows the active runtime and readiness; clicking opens a selector
+  that can authenticate and transactionally switch to Claude or Codex.
 
 The window never exposes raw prompts or retains full chat transcripts.
 
@@ -656,7 +667,7 @@ SQLite is the personal activity source of truth. A committed Markdown changelog 
 
 ```text
 git post-commit ─┐
-agent chat ──────┼─> CLI scope ─> linkage ─> tool-free runtime ─> verifier ─> docs commit
+agent chat ──────┼─> CLI scope ─> linkage ─> selected runtime ─> verifier ─> docs commit
 PR review ───────┘       │            │                                  │
                          └────────────┴────────> SQLite history/snapshot <┘
                                                      │
@@ -675,7 +686,7 @@ git snapshot and diff collector
 code-to-document linkage and relevance gate
 create, update, or stay-silent disposition engine
 bounded context builder
-tool-free Claude runtime adapter with native schemas
+Claude and Codex runtime adapters with native schemas and isolated, non-persistent execution
 documentation patch generator
 deterministic verifier and secret scanner
 docs-only commit writer with recursion guard
@@ -899,9 +910,11 @@ Resolved (as built):
 - **Stack**: Python for the CLI and engine; a native desktop window via pywebview (WKWebView on
   macOS) with a plain HTML/CSS/JS front end served on loopback with a per-launch token. Dependencies
   are PyYAML and pywebview. This is the "embedded local web UI" option from §8, in a native window.
-- **Runtime and harness adapters**: Claude Code (`claude -p`) is the only V1 runtime because it can
-  run with a native system prompt, JSON schema, no tools or customizations, and no persisted session.
-  One portable agent skill supports both Claude Code and Codex as chat harnesses.
+- **Runtime and harness adapters**: Claude Code (`claude -p`) and Codex (`codex exec`) are selectable
+  V1 runtimes. Claude provides the strict native tool-free boundary. Codex uses the strongest
+  available isolation: an empty read-only workspace, no approvals, ignored user config and rules,
+  no inherited tool environment, an ephemeral session, explicit no-tool instructions, and a native
+  output schema. One portable agent skill supports both Claude Code and Codex as chat harnesses.
 
 Still open:
 
