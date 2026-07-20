@@ -58,7 +58,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init", add_help=False)
     sub.add_parser("install", add_help=False)
     au = sub.add_parser("auth", add_help=False)
-    au.add_argument("runtime", nargs="?", choices=["claude"])
+    au.add_argument("runtime", nargs="?", choices=sorted(auth.RUNTIMES))
     sub.add_parser("ui", add_help=False)
     prp = sub.add_parser("pr", add_help=False)
     prp.add_argument("pr_cmd", choices=["create"])
@@ -200,10 +200,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.cmd == "auth":
             if not args.runtime:
                 print(auth.render_status())
-            else:
-                for note in auth.ensure(args.runtime):
-                    print(note)
-            return 0
+                return 0
+            selection = auth.select(args.runtime)
+            for note in selection.notes:
+                print(note)
+            return 0 if selection.ready else 1
         if args.cmd == "init":
             root = gitio.repo_root(Path.cwd())
             for note in hooks.install(root):
@@ -236,5 +237,5 @@ def _print_auth_note(cfg: config.Config) -> None:
     if auth.is_logged_in(agent):
         print(f"runtime: {agent} is logged in — choobi is ready.")
     else:
-        print("runtime not ready. run `choobi auth claude` to select the supported "
-              "tool-free runtime and log in.")
+        print("runtime not ready. run `choobi auth claude` or `choobi auth codex` "
+              "to authenticate and select one runtime.")

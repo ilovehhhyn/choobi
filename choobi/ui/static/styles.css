@@ -39,7 +39,7 @@ button {
 button:hover { background: #000; color: #fff; }
 button:disabled { cursor: wait; opacity: 0.5; background: #fff; color: #000; }
 #ob-save { margin-top: 2px; }
-#ob-error, #up-result { font-size: 11px; min-height: 16px; margin-top: 6px; white-space: pre-wrap; }
+#ob-error, #up-result, #runtime-result { font-size: 11px; min-height: 16px; margin-top: 6px; white-space: pre-wrap; }
 
 /* --- home --- */
 header { padding: 14px 12px 8px; border-bottom: 1px solid #000; text-align: center; }
@@ -93,6 +93,11 @@ li.clickable:focus { outline: 1px solid #000; outline-offset: -1px; }
   width: 22px; height: 22px; padding: 0; margin: 0 0 6px auto; display: block;
   font-size: 15px; line-height: 18px;
 }
+.runtime-choices { display: flex; gap: 8px; margin: 10px 0 8px; }
+.runtime-choices button { flex: 1; }
+.runtime-choices button.active { background: #000; color: #fff; }
+.runtime-note { line-height: 1.4; }
+#runtime-current { font-weight: 700; }
 #up-run { width: 100%; margin-top: 6px; }
 #style-editor { width: 100%; font-size: 11px; line-height: 1.4; }
 .md-file { font-weight: 700; margin-bottom: 3px; }

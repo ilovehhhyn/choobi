@@ -48,7 +48,7 @@ def logs_dir() -> Path:
 @dataclass
 class Config:
     name: str = ""
-    # Which coding-agent CLI backs the runtime adapter.
+    # The one coding-agent CLI currently selected as Choobi's runtime.
     agent: str = "claude"
     # Completion-message verbosity toggle, mirrored in the UI.
     mode: str = "curt"

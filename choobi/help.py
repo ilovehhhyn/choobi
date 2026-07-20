@@ -26,11 +26,12 @@ COMMANDS: List[Command] = [
                "(~/.claude/skills, ~/.codex/skills, ~/.agents/skills) so you can say "
                "\"choobi update <doc> based on …\" inside Claude Code or Codex and it acts "
                "on the conversation."},
-    {"command": "choobi auth [claude]",
+    {"command": "choobi auth [claude|codex]",
      "summary": "pick the runtime model and log it in",
-     "detail": "With no argument, shows runtime status. With claude, sets it as the default and, if you are not "
-               "logged in, launches that runtime's own login (choobi delegates auth; it "
-               "never stores your credentials)."},
+     "detail": "With no argument, shows runtime status. With claude or codex, authenticates "
+               "that CLI if needed and makes it Choobi's one active runtime. A failed switch "
+               "leaves the previous runtime active. Choobi delegates auth and never stores "
+               "your credentials."},
     {"command": "choobi update [DOC] SCOPE [--chat] [-- INSTRUCTION]",
      "summary": "run the documentation engine",
      "detail": "The one engine verb. DOC pins a target (path or fuzzy name); omit it to let "

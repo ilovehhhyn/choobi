@@ -15,6 +15,7 @@
       <label>runtime
         <select id="ob-runtime" aria-label="runtime">
           <option value="claude">claude (tool-free)</option>
+          <option value="codex">codex (isolated)</option>
         </select>
       </label>
       <button id="ob-save">sign in with claude</button>
@@ -119,6 +120,21 @@
         <button class="close-panel" id="commands-back" title="close commands"
                 aria-label="close commands">×</button>
         <ul id="commands-list"></ul>
+      </section>
+
+      <!-- RUNTIME (opened from the terminal icon, not a nav tab) -->
+      <section id="panel-runtime" class="panel hidden">
+        <button class="close-panel" id="runtime-back" title="close runtime settings"
+                aria-label="close runtime settings">×</button>
+        <div class="hint">choose choobi's runtime</div>
+        <div id="runtime-current"></div>
+        <div class="runtime-choices">
+          <button data-runtime-choice="claude">use claude</button>
+          <button data-runtime-choice="codex">use codex</button>
+        </div>
+        <div class="opt runtime-note">choobi uses one runtime at a time. a new runtime becomes
+          active only after its sign in succeeds.</div>
+        <div id="runtime-result"></div>
       </section>
     </main>
   </div>
