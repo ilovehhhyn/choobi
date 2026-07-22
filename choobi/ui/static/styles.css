@@ -85,6 +85,7 @@ li.clickable:focus { outline: 1px solid #000; outline-offset: -1px; }
 #cl-log-list li::before { position: absolute; left: 0; }
 #cl-log-list li.committed::before { content: "✓"; }
 #cl-log-list li.no_op::before { content: "·"; }
+#cl-log-list li.flagged::before { content: "!"; }
 #cl-log-list li.failed::before { content: "✕"; }
 .detail-path { font-weight: 700; margin-bottom: 10px; }
 .panel label { margin-bottom: 8px; }

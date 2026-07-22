@@ -277,12 +277,20 @@ class ChoobiTest(unittest.TestCase):
         (self.root / "src" / "worker.py").write_text("def run(): return 'new workflow'\n")
         _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "change worker flow")
         head = gitio.resolve(self.root, "HEAD")
-        response = json.dumps({"action": "doc", "doc": "CONTRIBUTING.md",
-                               "area": "developer workflow", "scope": "area"})
+        responses = [
+            json.dumps({"action": "doc", "doc": "CONTRIBUTING.md",
+                        "area": "developer workflow", "scope": "area"}),
+            json.dumps({
+                "disposition": "update", "target": "CONTRIBUTING.md",
+                "summary": "documented the new worker workflow",
+                "content": "# Contributor workflow\n\nRun the new worker workflow.\n",
+                "source_paths": ["src/worker.py"],
+            }),
+        ]
         result = run_update(
             self.root,
             UpdateRequest(source_commit=head, rev_range=f"{head}^..{head}"),
-            self.cfg, FakeRuntime(response),
+            self.cfg, FakeRuntime(responses),
         )
         self.assertEqual((result.status, result.reason), ("gap", "documentation_gap"))
         self.assertIn("CONTRIBUTING.md", result.summary)

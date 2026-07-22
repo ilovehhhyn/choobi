@@ -12,6 +12,7 @@ from . import config, gitio, history, locking
 
 PENDING = "pending — choobi still working!"
 FAILED = "failed — choobi is sorry :< try again pls!"
+FLAGGED = "owner review — choobi left the future-direction doc unchanged"
 NOOP = "no-op, choobi decides to not write"
 IDLE = "nothing running now!"
 
@@ -20,6 +21,7 @@ def report(root: Path) -> Dict[str, Any]:
     repo_id = config.checkout_id(gitio.common_dir(root))
     checkpoint = history.get_checkpoint(repo_id)
     failed = history.by_status(repo_id, "failed", limit=10)
+    flagged = history.by_status(repo_id, "flagged", limit=10)
     no_ops = history.by_status(repo_id, "no_op", limit=50)
     running = locking.is_running(repo_id)
     return {
@@ -28,6 +30,7 @@ def report(root: Path) -> Dict[str, Any]:
         "running": running,
         "checkpoint": checkpoint,
         "failed": failed,
+        "flagged": flagged,
         "no_op_count": len(no_ops),
     }
 
@@ -39,6 +42,8 @@ def render(root: Path) -> str:
         lines.append(PENDING)
     for rec in r["failed"]:
         lines.append(f"{FAILED}   ({rec['reason']})")
+    for rec in r["flagged"]:
+        lines.append(f"{FLAGGED}   ({rec['summary']})")
     if r["no_op_count"]:
         lines.append(f"{NOOP}   (x{r['no_op_count']})")
     cp = r["checkpoint"]

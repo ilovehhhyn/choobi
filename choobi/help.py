@@ -49,7 +49,7 @@ COMMANDS: List[Command] = [
     {"command": "choobi changelog [-n N] [--all] [--status S]",
      "summary": "browse choobi's activity log",
      "detail": "Newest-first list of runs for this repo. -n limits count, --all spans every "
-               "repo, --status filters to committed / no_op / failed."},
+               "repo, --status filters to committed / no_op / flagged / failed."},
     {"command": "choobi show <id>",
      "summary": "show one changelog entry in full",
      "detail": "Prints an activity record's commits, summary, reason, and the exact "

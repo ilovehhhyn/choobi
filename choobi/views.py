@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from . import baseline, config, docs as docs_mod
 
-_GLYPH = {"committed": "✓", "no_op": "·", "failed": "✕"}
+_GLYPH = {"committed": "✓", "no_op": "·", "flagged": "!", "failed": "✕"}
 
 
 def _when(ts: str) -> str:

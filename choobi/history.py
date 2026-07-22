@@ -1,6 +1,6 @@
 """Personal activity store — the source of truth for what choobi did (build-plan §8.2).
 
-SQLite under ~/.choobi/choobi.db. Records every run (committed / no_op / failed) and a
+SQLite under ~/.choobi/choobi.db. Records every run (committed / no_op / flagged / failed) and a
 per-repo checkpoint. The source_commit -> record mapping gives idempotency and recovery.
 No source code, secrets, or chat transcripts are stored.
 """
@@ -138,11 +138,11 @@ def get_repo(repo_id: str) -> Optional[Dict[str, Any]]:
 
 
 def find_by_source(repo_id: str, source_commit: str) -> Optional[Dict[str, Any]]:
-    """Latest committed/no_op record for a source commit (idempotency lookup)."""
+    """Latest completed record for a source commit (idempotency lookup)."""
     conn = connect()
     row = conn.execute(
         """SELECT * FROM records
-           WHERE repo_id=? AND source_commit=? AND status IN ('committed','no_op')
+           WHERE repo_id=? AND source_commit=? AND status IN ('committed','no_op','flagged')
            ORDER BY id DESC LIMIT 1""",
         (repo_id, source_commit),
     ).fetchone()

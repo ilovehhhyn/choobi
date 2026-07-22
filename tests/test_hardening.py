@@ -16,7 +16,7 @@ from unittest import mock
 
 from choobi import (
     agent_skill, auth, baseline, cli, commitwriter, config, docs, engine, gitio, help as help_mod,
-    hooks, pr, repos, verify,
+    history, hooks, pr, repos, status, verify, views,
 )
 from choobi.errors import (
     ChoobiError, CommitFailed, Conflict, HookConflict, InvalidScope, InvalidSop, NotAllowedPath,
@@ -462,6 +462,243 @@ class HardeningTest(unittest.TestCase):
                     config.Config(onboarded=True), FakeRuntime(response),
                 )
         self.assertIn("Human committed body.", (self.root / "docs/api.md").read_text())
+
+    def test_future_direction_conflict_flags_owner_without_editing(self) -> None:
+        target = self.root / "docs/api.md"
+        target.write_text(
+            "---\ncovers: src/api.py\n---\n# Retry future direction\n\n"
+            "Status: future direction, not implemented.\n\n"
+            "The client will own retry decisions; the server must not retry requests.\n"
+        )
+        _git(self.root, "add", "docs/api.md")
+        _git(self.root, "commit", "-qm", "plan client-owned retries")
+        target_before = target.read_text()
+
+        (self.root / "src/api.py").write_text(
+            'def retry_owner() -> str:\n    return "server"\n'
+        )
+        _git(self.root, "add", "src/api.py")
+        _git(self.root, "commit", "-qm", "make server own retries")
+        source = gitio.resolve(self.root, "HEAD")
+        message = (
+            "docs/api.md plans client-owned retries, but src/api.py now makes the server "
+            "authoritative; confirm the intended direction."
+        )
+        runtime = FakeRuntime([
+            json.dumps({
+                "action": "doc", "doc": "docs/api.md", "area": "retry ownership",
+                "scope": "cross_cutting",
+            }),
+            json.dumps({
+                "disposition": "flag", "target": "docs/api.md", "summary": message,
+                "content": "", "source_paths": [],
+            }),
+        ])
+
+        result = engine.run_update(
+            self.root,
+            engine.UpdateRequest(source_commit=source, rev_range=f"{source}^..{source}",
+                                 trigger="post_commit"),
+            config.Config(onboarded=True), runtime,
+        )
+
+        self.assertEqual(result.status, "flagged")
+        self.assertEqual(result.reason, "future_direction_conflict")
+        self.assertEqual(result.summary, message)
+        self.assertIn(message, result.completion_message)
+        self.assertEqual(target.read_text(), target_before)
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), source)
+        self.assertEqual(runtime.response, [])
+
+        repo_id = config.checkout_id(gitio.common_dir(self.root))
+        record = history.find_by_source(repo_id, source)
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(record["status"], "flagged")
+        self.assertEqual(record["reason"], "future_direction_conflict")
+        self.assertEqual(history.get_checkpoint(repo_id)["last_source_commit"], source)
+        self.assertIn(message, status.render(self.root))
+        self.assertIn(message, views.render_changelog([record], "(this repo)"))
+
+        def should_not_run(_prompt: str) -> str:
+            raise AssertionError("idempotent flagged commit reached the runtime")
+
+        repeated = engine.run_update(
+            self.root,
+            engine.UpdateRequest(source_commit=source, rev_range=f"{source}^..{source}",
+                                 trigger="post_commit"),
+            config.Config(onboarded=True), FakeRuntime(should_not_run),
+        )
+        self.assertEqual(repeated.status, "flagged")
+        self.assertEqual(repeated.summary, message)
+
+    def test_unimplemented_future_direction_stays_unchanged(self) -> None:
+        target = self.root / "docs/api.md"
+        target.write_text(
+            "---\ncovers: src/api.py\n---\n# Retry future direction\n\n"
+            "Planned, not implemented: clients will own retries.\n"
+        )
+        (self.root / "src/api.py").write_text(
+            'def retry_owner():\n    return "server"\n'
+        )
+        _git(self.root, "add", "docs/api.md", "src/api.py")
+        _git(self.root, "commit", "-qm", "record future retry direction")
+        target_before = target.read_text()
+        (self.root / "src/api.py").write_text(
+            'def retry_owner():\n    owner = "server"\n    return owner\n'
+        )
+        _git(self.root, "add", "src/api.py")
+        _git(self.root, "commit", "-qm", "refactor retry owner lookup")
+        source = gitio.resolve(self.root, "HEAD")
+        runtime = FakeRuntime([
+            json.dumps({
+                "action": "doc", "doc": "docs/api.md", "area": "retry ownership",
+                "scope": "area",
+            }),
+            json.dumps({
+                "disposition": "silent", "target": "", "summary": "", "content": "",
+                "source_paths": [],
+            }),
+        ])
+
+        result = engine.run_update(
+            self.root,
+            engine.UpdateRequest(source_commit=source, rev_range=f"{source}^..{source}",
+                                 trigger="post_commit"),
+            config.Config(onboarded=True), runtime,
+        )
+
+        self.assertEqual(result.status, "no_op")
+        self.assertEqual(result.reason, "model_silent")
+        self.assertEqual(target.read_text(), target_before)
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), source)
+
+    def test_explicit_future_direction_target_can_flag_without_editing(self) -> None:
+        target = self.root / "docs/api.md"
+        target.write_text(
+            "---\ncovers: src/api.py\n---\n# Retry future direction\n\n"
+            "Status: planned, not implemented.\n"
+        )
+        _git(self.root, "add", "docs/api.md")
+        _git(self.root, "commit", "-qm", "plan retry ownership")
+        source = gitio.resolve(self.root, "HEAD")
+        target_before = target.read_text()
+        message = "docs/api.md conflicts with the requested retry design; owner review is required."
+        runtime = FakeRuntime(json.dumps({
+            "disposition": "flag", "target": "docs/api.md", "summary": message,
+            "content": "", "source_paths": [],
+        }))
+
+        result = engine.run_update(
+            self.root,
+            engine.UpdateRequest(
+                targets=["docs/api.md"], source_commit=source,
+                instruction="reconcile the retry implementation",
+            ),
+            config.Config(onboarded=True), runtime,
+        )
+
+        self.assertEqual(result.status, "flagged")
+        self.assertEqual(result.reason, "future_direction_conflict")
+        self.assertEqual(result.summary, message)
+        self.assertEqual(target.read_text(), target_before)
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), source)
+
+    def test_read_only_future_direction_can_flag_without_editing(self) -> None:
+        target = self.root / "INTERNAL_DIRECTION.md"
+        target.write_text(
+            "# Retry future direction\n\nPlanned, not implemented: clients own retries.\n"
+        )
+        _git(self.root, "add", target.name)
+        _git(self.root, "commit", "-qm", "record internal retry direction")
+        target_before = target.read_text()
+        (self.root / "src/api.py").write_text('RETRY_OWNER = "server"\n')
+        _git(self.root, "add", "src/api.py")
+        _git(self.root, "commit", "-qm", "make server retries authoritative")
+        source = gitio.resolve(self.root, "HEAD")
+        message = (
+            "INTERNAL_DIRECTION.md plans client-owned retries, but src/api.py now makes server "
+            "ownership authoritative; confirm the intended direction."
+        )
+        runtime = FakeRuntime([
+            json.dumps({
+                "action": "doc", "doc": target.name, "area": "retry ownership",
+                "scope": "cross_cutting",
+            }),
+            json.dumps({
+                "disposition": "flag", "target": target.name, "summary": message,
+                "content": "", "source_paths": [],
+            }),
+        ])
+
+        result = engine.run_update(
+            self.root,
+            engine.UpdateRequest(source_commit=source, rev_range=f"{source}^..{source}",
+                                 trigger="post_commit"),
+            config.Config(onboarded=True), runtime,
+        )
+
+        self.assertEqual(result.status, "flagged")
+        self.assertEqual(result.summary, message)
+        self.assertEqual(target.read_text(), target_before)
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), source)
+        self.assertEqual(runtime.response, [])
+
+    def test_future_direction_flag_rejects_unsafe_model_output(self) -> None:
+        target_before = (self.root / "docs/api.md").read_text()
+        response = json.dumps({
+            "disposition": "flag", "target": "docs/api.md",
+            "summary": "owner review: sk-" + ("a" * 24),
+            "content": "", "source_paths": [],
+        })
+
+        with self.assertRaises(VerificationFailed):
+            engine.run_update(
+                self.root,
+                engine.UpdateRequest(targets=["docs/api.md"], detached=True,
+                                     instruction="review future direction"),
+                config.Config(onboarded=True), FakeRuntime(response),
+            )
+
+        self.assertEqual((self.root / "docs/api.md").read_text(), target_before)
+
+    def test_future_direction_flag_requires_a_no_write_shape(self) -> None:
+        for invalid in (
+            {"disposition": "flag", "target": "", "summary": "review", "content": "",
+             "source_paths": []},
+            {"disposition": "flag", "target": "docs/api.md", "summary": "",
+             "content": "", "source_paths": []},
+            {"disposition": "flag", "target": "docs/api.md", "summary": "review",
+             "content": "changed", "source_paths": []},
+            {"disposition": "flag", "target": "docs/api.md", "summary": "review",
+             "content": "", "source_paths": ["src/api.py"]},
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(RuntimeOutputInvalid):
+                engine._parse_disposition(json.dumps(invalid))
+
+        off_scope = json.dumps({
+            "disposition": "flag", "target": "README.md", "summary": "owner review",
+            "content": "", "source_paths": [],
+        })
+        with self.assertRaises(RuntimeOutputInvalid):
+            engine.run_update(
+                self.root,
+                engine.UpdateRequest(targets=["docs/api.md"], detached=True,
+                                     instruction="review future direction"),
+                config.Config(onboarded=True), FakeRuntime(off_scope),
+            )
+
+        unnamed = json.dumps({
+            "disposition": "flag", "target": "docs/api.md", "summary": "owner review required",
+            "content": "", "source_paths": [],
+        })
+        with self.assertRaises(RuntimeOutputInvalid):
+            engine.run_update(
+                self.root,
+                engine.UpdateRequest(targets=["docs/api.md"], detached=True,
+                                     instruction="review future direction"),
+                config.Config(onboarded=True), FakeRuntime(unnamed),
+            )
 
     def test_isolated_writer_rejects_a_concurrent_symlink_commit(self) -> None:
         source = gitio.resolve(self.root, "HEAD")

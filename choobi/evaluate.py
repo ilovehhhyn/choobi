@@ -1,7 +1,8 @@
 """Fixture-based evaluation of choobi's disposition quality (build-plan Phase 1 exit).
 
 Each fixture is a small synthetic repo plus a change, labeled with the disposition choobi
-*should* reach: stay silent, update a specific doc, or create a new one. We run the engine
+*should* reach: stay silent, update a specific doc, create a new one, or flag a future-direction
+conflict. We run the engine
 over each and score three numbers:
 
     precision = of the times choobi wrote, how often it wrote the right thing
@@ -31,12 +32,13 @@ from .runtime import FakeRuntime, Runtime, get_runtime
 class Fixture:
     name: str
     build: Callable[[Path], None]   # populate + commit; leaves HEAD as the source commit
-    expect: str                     # "silent" | "update:<path>" | "create"
+    expect: str                     # "silent" | "update:<path>" | "create" | "flagged"
     fake_response: str = ""         # what a scripted runtime returns (deterministic mode)
     allow_create: bool = False
     required: Tuple[str, ...] = ()
     forbidden: Tuple[str, ...] = ()
     preserved: Tuple[str, ...] = ()
+    required_summary: Tuple[str, ...] = ()
     max_changed_lines: int = 0
 
 
@@ -80,6 +82,12 @@ def _create(path: str, content: str, *source_paths: str) -> str:
     import json
     return json.dumps({"disposition": "create", "target": path, "summary": "eval",
                        "content": content, "source_paths": list(source_paths)})
+
+
+def _flag(path: str, summary: str) -> str:
+    import json
+    return json.dumps({"disposition": "flag", "target": path, "summary": summary,
+                       "content": "", "source_paths": []})
 
 
 def _link(path: str) -> str:
@@ -291,6 +299,43 @@ def _f_remove_public_api(root: Path) -> None:
     _edit(root, "src/exports.py", "def keep():\n    return 'stable'\n", "remove legacy API")
 
 
+_RETRY_PLAN = (
+    "---\ncovers: src/retry.py\n---\n# Retry architecture\n\n"
+    "## Current behavior\n\nThe server owns retries and makes three attempts.\n\n"
+    "## Future direction\n\nPlanned, not implemented: clients own retries and the server makes "
+    "one attempt.\n"
+)
+
+
+def _f_implement_future_direction(root: Path) -> None:
+    _init(root, {
+        "docs/retry-plan.md": _RETRY_PLAN,
+        "src/retry.py": 'RETRY_OWNER = "server"\nSERVER_ATTEMPTS = 3\n',
+    })
+    _edit(root, "src/retry.py", 'RETRY_OWNER = "client"\nSERVER_ATTEMPTS = 1\n',
+          "implement client-owned retries")
+
+
+def _f_contradict_future_direction(root: Path) -> None:
+    _init(root, {
+        "docs/retry-plan.md": _RETRY_PLAN,
+        "src/retry.py": 'RETRY_OWNER = "server"\nSERVER_ATTEMPTS = 3\n',
+    })
+    _edit(root, "src/retry.py",
+          'RETRY_OWNER = "server"\nSERVER_ATTEMPTS = 5\nCLIENT_RETRIES_ALLOWED = False\n',
+          "make server retries authoritative")
+
+
+def _f_future_direction_not_implemented(root: Path) -> None:
+    _init(root, {
+        "docs/retry-plan.md": _RETRY_PLAN,
+        "src/retry.py": 'def retry_owner():\n    return "server"\n',
+    })
+    _edit(root, "src/retry.py",
+          'def retry_owner():\n    owner = "server"\n    return owner\n',
+          "refactor retry owner lookup")
+
+
 FIXTURES: List[Fixture] = [
     Fixture("update_documented_api", _f_update, "update:docs/reference/cache.md",
             [_link("docs/reference/cache.md"),
@@ -359,6 +404,23 @@ FIXTURES: List[Fixture] = [
                   "## keep()\nReturns the stable value.\n", "src/exports.py")],
             required=("keep()", "stable value"), forbidden=("legacy()", "legacy value"),
             max_changed_lines=4),
+    Fixture("implement_future_direction", _f_implement_future_direction,
+            "update:docs/retry-plan.md",
+            [_link("docs/retry-plan.md"),
+             _upd("docs/retry-plan.md",
+                  "---\ncovers: src/retry.py\n---\n# Retry architecture\n\n"
+                  "## Current behavior\n\nClients own retries and the server makes one attempt.\n\n"
+                  "## Future direction\n\nImplemented.\n", "src/retry.py")],
+            required=("Clients own retries", "one attempt"),
+            forbidden=("Planned, not implemented",)),
+    Fixture("flag_future_direction_conflict", _f_contradict_future_direction, "flagged",
+            [_link("docs/retry-plan.md"),
+             _flag("docs/retry-plan.md",
+                   "docs/retry-plan.md plans client-owned retries, but src/retry.py now makes "
+                   "server retries authoritative; confirm the intended direction.")],
+            required_summary=("docs/retry-plan.md", "src/retry.py", "client", "server")),
+    Fixture("silent_future_direction_not_implemented", _f_future_direction_not_implemented,
+            "silent", [_link("docs/retry-plan.md"), _silent()]),
 ]
 
 
@@ -372,6 +434,8 @@ def _predict(root: Path, head: str, result: engine.UpdateResult) -> str:
         return "silent"
     if result.status == "gap":
         return "gap"
+    if result.status == "flagged":
+        return "flagged"
     path = result.docs_changed[0]
     return f"update:{path}" if path in _files_at(root, head) else "create"
 
@@ -405,14 +469,18 @@ def run_eval(runtime_for: Callable[[Fixture], Runtime],
                 predicted = _predict(root, head, result)
                 path = result.docs_changed[0] if result.docs_changed else ""
                 content = (root / path).read_text() if path else ""
+                summary = result.summary
             except ChoobiError as exc:
                 predicted = f"error:{exc.reason}"
                 path = ""
                 content = ""
+                summary = ""
             lower = content.lower()
             missing = [fact for fact in fx.required if fact.lower() not in lower]
             unsupported = [fact for fact in fx.forbidden if fact.lower() in lower]
             missing_preserved = [text for text in fx.preserved if text not in content]
+            missing_summary = [text for text in fx.required_summary
+                               if text.lower() not in summary.lower()]
             changed_lines = 0
             if path and path in _files_at(root, head):
                 old = gitio._run(root, "show", f"{head}:{path}")
@@ -425,13 +493,14 @@ def run_eval(runtime_for: Callable[[Fixture], Runtime],
                          "decision_correct": predicted == fx.expect,
                          "missing_required": missing, "forbidden_present": unsupported,
                          "missing_preserved": missing_preserved,
+                         "missing_summary": missing_summary,
                          "changed_lines": changed_lines, "too_many_changed_lines": too_large,
                          "correct": predicted == fx.expect and not missing and not unsupported
-                         and not missing_preserved and not too_large})
+                         and not missing_preserved and not missing_summary and not too_large})
 
     positives = [r for r in rows if r["expect"] != "silent"]
     negatives = [r for r in rows if r["expect"] == "silent"]
-    wrote = [r for r in rows if r["predicted"] not in ("silent", "gap")
+    wrote = [r for r in rows if r["predicted"] not in ("silent", "gap", "flagged")
              and not r["predicted"].startswith("error:")]
 
     def frac(num, den):
@@ -470,6 +539,8 @@ def render(report: Dict) -> str:
             lines.append(f"         forbidden: {', '.join(r['forbidden_present'])}")
         if r["missing_preserved"]:
             lines.append(f"         lost preserved text: {len(r['missing_preserved'])}")
+        if r["missing_summary"]:
+            lines.append(f"         summary missing: {', '.join(r['missing_summary'])}")
         if r["too_many_changed_lines"]:
             lines.append(f"         changed lines: {r['changed_lines']} (over fixture ceiling)")
     return "\n".join(lines)

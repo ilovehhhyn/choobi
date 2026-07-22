@@ -35,7 +35,18 @@ SYSTEM_PROMPT = (
     "error, workflow, or decision it owns. CREATE only when creation is explicitly offered and "
     "the evidence establishes a stable independently discoverable surface with no owner. "
     "Otherwise stay SILENT, including for refactors, formatting, tests, generated files, "
-    "unshipped code, or a bug fix that restores already-documented behavior.\n"
+    "unshipped code, or a bug fix that restores already-documented behavior. Treat roadmaps, "
+    "proposals, plans, and text explicitly marked future, planned, aspirational, or not yet "
+    "implemented as intended future state, not evidence of current behavior. Never rewrite that "
+    "future intent merely because current code differs. If the supplied change appears to make a "
+    "product or architecture decision that conflicts with stated future intent, FLAG the document "
+    "for owner review and do not edit it. Absence of a planned feature is not a contradiction. "
+    "When the evidence shows "
+    "that a planned feature was implemented, UPDATE only the status and now-current facts that "
+    "actually changed. FLAG takes precedence over UPDATE: when one change both alters current "
+    "facts and appears to entrench a direction opposed to the plan, do not partially update the "
+    "current-state prose while preserving the conflict. Do not choose a product direction; FLAG "
+    "the whole document and leave it unchanged.\n"
     "Use only facts present in the evidence. Never invent types, imports, defaults, errors, "
     "examples, prerequisites, or behavior. For CREATE, omit code blocks unless the exact runnable "
     "block appears in the evidence. Preserve all front matter and live covers entries, preserve the "
@@ -50,8 +61,16 @@ LINKAGE_SYSTEM = (
     "this repository) and decide whether its scope is area-local or cross-cutting. Select the "
     "true existing owner when a change may alter stable user-visible behavior, including an API, "
     "CLI, configuration, workflow, data retention, privacy, security, authentication, or deletion "
-    "behavior. Do not substitute a weaker writable document for a true owner labeled read-only or "
-    "generated; selecting that owner lets Choobi surface a documentation gap. Report a new-document "
+    "behavior. Treat roadmaps, proposals, plans, and text explicitly marked future, planned, "
+    "aspirational, or not yet implemented as intended future state, not evidence of current "
+    "behavior. Never select one merely because current code lacks the planned feature. If the "
+    "supplied change appears to make a product or architecture decision that conflicts with stated "
+    "future intent, select that "
+    "document as the true owner so the editing review can flag it; do not report none. If the "
+    "change implements the future intent and makes its status stale, select it normally. "
+    "Do not substitute a weaker writable document for a true owner labeled read-only or "
+    "generated; selecting that owner lets Choobi flag a future conflict or surface a documentation "
+    "gap. Report a new-document "
     "need when documentation is warranted but no owner exists. Report none only when no documented "
     "reader need is affected. Return one schema-valid JSON object and no commentary."
 )
@@ -59,7 +78,7 @@ LINKAGE_SYSTEM = (
 UPDATE_SCHEMA = {
     "type": "object",
     "properties": {
-        "disposition": {"type": "string", "enum": ["update", "create", "silent"]},
+        "disposition": {"type": "string", "enum": ["update", "create", "silent", "flag"]},
         "target": {"type": "string"},
         "summary": {"type": "string"},
         "content": {"type": "string"},
@@ -139,7 +158,7 @@ class UpdateRequest:
 
 @dataclass
 class UpdateResult:
-    status: str                       # committed | no_op | gap
+    status: str                       # committed | no_op | flagged | gap
     summary: str = ""
     completion_message: str = ""
     docs_commit: Optional[str] = None
@@ -173,6 +192,7 @@ def _build_prompt(
     req: UpdateRequest, diff_text: str, candidates: Dict[str, str], policy: Dict,
     sop_body: str = "", surface: "Dict[str, str]" = None,
     ownership: "Optional[Tuple[str, str]]" = None,
+    review_boundary: Optional[str] = None,
 ) -> str:
     parts: List[str] = []
     parts.append("## Task\nDecide whether any candidate document needs to change, and if so, "
@@ -187,6 +207,13 @@ def _build_prompt(
             "## Ownership classification\n"
             f"repository-specific area: {ownership[0]}\n"
             f"scope: {ownership[1]}\n"
+        )
+    if review_boundary:
+        parts.append(
+            "## Selected owner write boundary\n"
+            f"The selected owner is {review_boundary}. You may only FLAG a future-direction "
+            "conflict or stay SILENT. Do not return update or create; Choobi cannot write this "
+            "document.\n"
         )
     if diff_text.strip():
         parts.append("## Code diff\n```diff\n" + diff_text + "\n```\n")
@@ -211,14 +238,19 @@ def _build_prompt(
     parts.append(
         "## Response format\n"
         "Return ONE JSON object:\n"
-        '{"disposition":"update|create|silent",'
+        '{"disposition":"update|create|silent|flag",'
         '"target":"<repo-relative path of the one doc>",'
         '"summary":"<one sentence, e.g. documented the new retry behavior in docs/api.md>",'
         '"content":"<the FULL updated file content>",'
         '"source_paths":["<changed source path directly documented by this content>"]}\n'
-        "For silent, use empty target, summary, content, and source_paths. For update, choose a "
-        "listed candidate. For create, choose one new SOP-authorized path. Include only source "
-        "paths whose behavior the resulting document actually describes."
+        "For silent, use empty target, summary, content, and source_paths. For flag, choose a "
+        "listed future-intent document, put a concise owner-review message in summary, and leave "
+        "content and source_paths empty. The message must name the document, the concrete changed "
+        "code or decision, and the contradiction. Flag takes precedence when the same change also "
+        "makes current facts stale; do not partially update a conflicted document. For update, "
+        "choose a listed candidate. For create, choose one new SOP-authorized path. Include only "
+        "source paths whose behavior the "
+        "resulting document actually describes."
     )
     return "\n".join(parts)
 
@@ -244,7 +276,7 @@ def _parse_disposition(raw: str) -> Dict:
     expected = {"disposition", "target", "summary", "content", "source_paths"}
     if set(data) != expected:
         raise RuntimeOutputInvalid("disposition response does not match the output schema")
-    if data.get("disposition") not in {"update", "create", "silent"}:
+    if data.get("disposition") not in {"update", "create", "silent", "flag"}:
         raise RuntimeOutputInvalid("disposition missing or invalid")
     if not all(isinstance(data[key], str) for key in ("target", "summary", "content")):
         raise RuntimeOutputInvalid("target, summary, and content must be strings")
@@ -257,6 +289,13 @@ def _parse_disposition(raw: str) -> Dict:
         (data["target"], data["summary"], data["content"], source_paths)
     ):
         raise RuntimeOutputInvalid("silent disposition fields must be empty")
+    if data["disposition"] == "flag" and (
+        not data["target"].strip() or not data["summary"].strip()
+        or data["content"] or source_paths
+    ):
+        raise RuntimeOutputInvalid(
+            "flag disposition requires target and summary but no content or source_paths"
+        )
     data["source_paths"] = source_paths
     return data
 
@@ -335,7 +374,8 @@ def _build_linkage_prompt(
         routing += "; detected: " + ", ".join(signals)
     mode = (
         f"This is document batch {batch_number} of {batch_count}. Shortlist zero to three "
-        "possible owners from this batch; a later call will make the final selection."
+        "possible owners or future-intent conflicts from this batch; a later call will make "
+        "the final selection."
         if batch else
         "This is the final ownership call. Select at most one true document owner."
     )
@@ -383,9 +423,12 @@ def _build_linkage_prompt(
     else:
         parts.append(
             "## Final response\nReturn action (`doc`, `create`, or `none`), doc, area, and scope "
-            "(`area` or `cross_cutting`). For `doc`, choose a listed document path. For `create` "
-            "or `none`, doc must be empty. Select a read-only or generated document if it is the "
-            "true owner; Choobi will turn that selection into a visible documentation gap."
+            "(`area` or `cross_cutting`). For `doc`, choose a listed document path, including a "
+            "future-intent document when the change appears to make a conflicting product or "
+            "architecture decision. "
+            "For `create` or `none`, doc must be empty. Select a read-only or generated document "
+            "if it is the true owner; Choobi will allow flag or silent and turn a requested write "
+            "into a visible documentation gap."
         )
     return "\n\n".join(parts)
 
@@ -569,6 +612,39 @@ def _unified(old: str, new: str, target: str) -> str:
     )
 
 
+def _record_future_conflict(
+    root: Path,
+    req: UpdateRequest,
+    policy: Dict,
+    repo_id: str,
+    repo_path: str,
+    head: str,
+    started: float,
+    summary: str,
+    snapshot: "Optional[Tuple[List[str], str]]",
+    target: str,
+) -> UpdateResult:
+    verify.check_evidence(policy, summary)
+    if target not in summary:
+        raise RuntimeOutputInvalid("flag summary must name the selected document")
+    history.add_record(
+        repo_id, repo_path, req.trigger, "flagged",
+        source_commit=req.source_commit, head_commit=head,
+        duration_ms=int((time.monotonic() - started) * 1000),
+        summary=summary, reason="future_direction_conflict",
+    )
+    _advance_checkpoint(root, req, repo_id, repo_path)
+    if snapshot:
+        repos.save_snapshot(repo_id, *snapshot)
+    completion = (
+        f"choobi needs owner review — {summary.rstrip('.')}. No documentation was changed."
+    )
+    return UpdateResult(
+        status="flagged", summary=summary, completion_message=completion,
+        reason="future_direction_conflict",
+    )
+
+
 def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runtime) -> UpdateResult:
     started = time.monotonic()
     repo_id, repo_path = _repo_identity(root)
@@ -578,9 +654,16 @@ def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runt
     if req.trigger == "post_commit" and req.source_commit:
         prior = history.find_by_source(repo_id, req.source_commit)
         if prior:
+            flagged = prior["status"] == "flagged"
             return UpdateResult(status=prior["status"], summary=prior["summary"],
+                                completion_message=(
+                                    "choobi needs owner review — "
+                                    f"{prior['summary'].rstrip('.')}. No documentation was changed."
+                                    if flagged else ""
+                                ),
                                 docs_commit=prior["docs_commit"],
-                                docs_changed=json.loads(prior["docs_changed"]))
+                                docs_changed=json.loads(prior["docs_changed"]),
+                                reason=prior["reason"])
 
     policy = baseline.policy()
     diff_text, changed = _collect_diff(root, req)
@@ -589,6 +672,7 @@ def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runt
     snapshot: Optional[Tuple[List[str], str]] = None
     linkage_review = "skip"
     ownership: Optional[Tuple[str, str]] = None
+    review_boundary: Optional[str] = None
 
     # Explicit targets bypass ownership inference. Automatic runs send every tracked document in
     # full through ownership review; cheap linkage and the source snapshot are hints, not gates.
@@ -629,19 +713,7 @@ def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runt
                 owner = next(record for record in all_documents
                              if record.path == decision.doc)
                 if not owner.writable or owner.generated:
-                    boundary = "generated" if owner.generated else "read-only"
-                    gap_summary = (
-                        f"{owner.path} is the true documentation owner but is {boundary}"
-                    )
-                    history.add_record(
-                        repo_id, repo_path, req.trigger, "failed",
-                        source_commit=req.source_commit, head_commit=head,
-                        duration_ms=int((time.monotonic() - started) * 1000),
-                        summary=gap_summary,
-                        reason="documentation_gap",
-                    )
-                    return UpdateResult(status="gap", summary=gap_summary,
-                                        reason="documentation_gap")
+                    review_boundary = "generated" if owner.generated else "read-only"
                 resolved = [owner.path]
             elif decision.action == "create":
                 if creation_allowed:
@@ -692,9 +764,18 @@ def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runt
         baseline.resolved_style(), sop_body, *contents.values(), *surface_contents.values(),
     )
     prompt = _build_prompt(
-        req, diff_text, contents, policy, sop_body, surface_contents, ownership
+        req, diff_text, contents, policy, sop_body, surface_contents, ownership, review_boundary
     )
     disp = _parse_disposition(_complete(runtime, prompt, SYSTEM_PROMPT, UPDATE_SCHEMA))
+
+    if disp["disposition"] == "flag":
+        target = disp["target"].strip()
+        if target not in resolved:
+            raise RuntimeOutputInvalid(f"model flagged off-scope target: {target}")
+        return _record_future_conflict(
+            root, req, policy, repo_id, repo_path, head, started, disp["summary"].strip(), snapshot,
+            target,
+        )
 
     if disp["disposition"] == "silent":
         history.add_record(repo_id, repo_path, req.trigger, "no_op",
@@ -704,6 +785,18 @@ def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runt
         if snapshot:
             repos.save_snapshot(repo_id, *snapshot)
         return UpdateResult(status="no_op", reason="model_silent")
+
+    if review_boundary:
+        gap_summary = (
+            f"{resolved[0]} is the true documentation owner but is {review_boundary}"
+        )
+        history.add_record(
+            repo_id, repo_path, req.trigger, "failed",
+            source_commit=req.source_commit, head_commit=head,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            summary=gap_summary, reason="documentation_gap",
+        )
+        return UpdateResult(status="gap", summary=gap_summary, reason="documentation_gap")
 
     target = str(disp.get("target", "")).strip()
     content = str(disp.get("content", ""))
