@@ -51,7 +51,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cl = sub.add_parser("changelog", add_help=False)
     cl.add_argument("-n", "--limit", type=int, default=30)
     cl.add_argument("--all", action="store_true")
-    cl.add_argument("--status", choices=["committed", "no_op", "failed"])
+    cl.add_argument("--status", choices=["committed", "no_op", "flagged", "failed"])
     sh = sub.add_parser("show", add_help=False)
     sh.add_argument("id", type=int)
     sub.add_parser("style", add_help=False)
@@ -126,6 +126,8 @@ def _cmd_update(args: argparse.Namespace, instruction: Optional[str]) -> int:
         lock.release()
 
     if result.status == "committed":
+        print(result.completion_message)
+    elif result.status == "flagged":
         print(result.completion_message)
     elif result.status == "gap":
         print("documentation_gap — a doc is warranted but no writable placement exists.")

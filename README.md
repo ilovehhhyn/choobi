@@ -15,8 +15,11 @@ You can also talk to Choobi from Claude Code or Codex or run commands directly f
   Markdown documentation before choosing an owner.
 - **Keeps edits focused.** It updates the smallest relevant part of one document and rejects
   changes that cross its write boundary.
+- **Protects future direction.** It treats plans as intent, not shipped behavior, and leaves them
+  unchanged while surfacing an LLM-written owner-review message when code contradicts them.
 - **Fits your coding setup.** Use the automatic hook, a coding-agent command, or the CLI.
-- **Leaves an audit trail.** Every update, no-op, and failure is available for view in a changelog via the CLI and UI.
+- **Leaves an audit trail.** Every update, flag, no-op, and failure is available in the CLI and UI
+  changelog.
 
 ## Prerequisites
 
@@ -65,7 +68,9 @@ choobi init
 
 Now commit code as usual. The installed post-commit hook runs Choobi in the background. When a
 documentation update is warranted, Choobi creates a docs-only follow-up commit with the same
-commit message. Otherwise, it records a no-op and leaves the repository unchanged.
+commit message. Otherwise, it records a no-op and leaves the repository unchanged. If code
+contradicts a documented future direction, Choobi records a flag for owner review and makes no doc
+change.
 
 **There are three ways to ask Choobi to work:**
 
@@ -83,7 +88,7 @@ commit message. Otherwise, it records a no-op and leaves the repository unchange
 | `choobi install` | Install the Choobi skill for Claude Code and Codex. |
 | `choobi auth [claude\|codex]` | Show runtime status, or authenticate and select one active runtime. |
 | `choobi update [DOC] SCOPE [--chat] [-- TEXT]` | Run a documentation review, optionally pinned to one document. |
-| `choobi status` | Show pending, failed, and no-op work plus the repository checkpoint. |
+| `choobi status` | Show pending, flagged, failed, and no-op work plus the repository checkpoint. |
 | `choobi docs` | List the documents Choobi can update in the current repository. |
 | `choobi changelog [-n N] [--all] [--status S]` | Browse recent Choobi activity. |
 | `choobi show <id>` | Show one activity record and its exact patch. |

@@ -10,7 +10,7 @@ Every entry point uses the same update engine:
 
 ```text
 git post-commit ─┐
-agent chat ──────┼─> scope → full-doc ownership → one-doc edit → verify → docs commit → history
+agent chat ──────┼─> scope → full-doc ownership → one-doc edit or flag → verify → history
 manual CLI ──────┘
 ```
 
@@ -83,6 +83,12 @@ The ownership call receives:
 Cheap signals such as `covers:` front matter, README directory ownership, and literal path
 mentions are hints, not final gates. They do not bypass the model review.
 
+Roadmaps, proposals, plans, and statements marked future or not yet implemented are intent, not
+evidence that the behavior exists. Missing planned behavior is not a conflict. If changed code
+appears to make a product or architecture decision that conflicts with future intent, the ownership
+pass selects that document so the editing review can request owner judgment instead of silently
+rewriting the plan.
+
 ### Repository-specific areas
 
 Choobi infers the repository's own conceptual areas instead of imposing a universal taxonomy. A
@@ -110,7 +116,8 @@ required evidence fails with `context_too_large`.
 ### Read and write boundaries
 
 Every tracked Markdown or MDX file can participate in ownership review, but only allowlisted files
-are writable. If the true owner is generated or read-only, Choobi records a visible
+are writable. A generated or read-only true owner receives a flag-or-silent editing review because
+neither outcome writes the file. If the model instead requests an update, Choobi records a visible
 `documentation_gap`; it does not silently update a weaker substitute such as the root README.
 
 The recall backbone also surfaces new source files—either added in the current commit or detected
@@ -123,6 +130,15 @@ Once an owner is selected, the editing call receives the complete diff, the sele
 full, changed-file evidence, relevant chat decisions, placement policy, the repository SOP, and the
 resolved style guide. It is instructed to make the smallest edit that brings the document back into
 agreement with the evidence.
+
+The editing call may instead return `flag` with an LLM-written owner-review message. A valid flag
+names the selected future-intent document and the concrete conflict, but contains no replacement
+content or source paths. Choobi records `future_direction_conflict`, advances the checkpoint, and
+writes no document or commit. If code implements rather than conflicts with the planned direction,
+Choobi may update the document's implementation status normally.
+
+A flag takes precedence if the same code change also makes current-state prose stale. Choobi does
+not partially update that prose while leaving a product-direction conflict unresolved.
 
 Verification is the write boundary. Before Choobi writes anything, it checks that:
 
@@ -220,9 +236,9 @@ The default writable surface is `README.md`, `HOW_CHOOBI_WORKS.md`, `docs/**/*.m
 
 ## Activity and pull requests
 
-Choobi records committed updates, no-ops, documentation gaps, and failures in its local SQLite
-history. The CLI and desktop changelog expose the decision, source and docs commits, summary,
-reason, duration, changed documents, and exact patch when available.
+Choobi records committed updates, no-ops, future-direction flags, documentation gaps, and failures
+in its local SQLite history. The CLI and desktop changelog expose the decision, source and docs
+commits, summary, reason, duration, changed documents, and exact patch when available.
 
 `choobi pr create` delegates pull-request creation to the authenticated GitHub CLI. When the branch
 contains a successful Choobi docs commit associated with the source range, Choobi adds this line to
@@ -242,6 +258,8 @@ Choobi V1 intentionally updates one canonical document per run. It does not yet 
 - a durable event queue or crash recovery;
 - coalescing and ordered replay of background commit events;
 - operating-system completion notifications;
+- routing owner-review flags to a named CODEOWNER, chat user, or hosted service;
+- acknowledging or resolving an owner-review flag as active state rather than historical activity;
 - multi-document reconciliation;
 - result caching, cancellation, or global scheduling; or
 - token, cost, call-budget, or daily-budget accounting.

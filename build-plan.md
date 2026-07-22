@@ -6,10 +6,11 @@
 
 The current build has the one-document engine, a full-context document-ownership pass with
 complete-document batching, selectable Claude and Codex CLI runtimes with native schemas, secret
-and write-boundary checks, isolated writes, local history, a configuration UI, the agent skill,
-and accurate PR annotation.
+and write-boundary checks, future-direction conflict flags, isolated writes, local history, a
+configuration UI, the agent skill, and accurate PR annotation.
 It does not yet have a durable event queue, ordered crash recovery, completion notifications,
-multi-document reconciliation, runtime token accounting, or a historical-repository benchmark.
+multi-document reconciliation, owner-flag acknowledgement, runtime token accounting, or a
+historical-repository benchmark.
 Those are explicit release gaps. V2 remains the shared repository direction in §12.
 
 ---
@@ -39,6 +40,10 @@ choobi just updated the docs — documented the new retry behavior in docs/api.m
 ```
 
 If no documentation needs to change, choobi stays silent.
+
+If changed code appears to make a product or architecture decision that conflicts with a documented
+future direction, choobi leaves the document unchanged and emits an LLM-written owner-review message
+naming the document and conflict.
 
 ## 2. Product principles
 
@@ -78,6 +83,10 @@ generated output stop at the narrow deterministic boundary.
 
 The knowledge base is evidence, not policy. Inferred relationships never silently override an
 explicit repository guide.
+
+Current implementation facts and future intent are separate evidence classes. A roadmap, proposal,
+plan, or statement marked future or not yet implemented does not claim that behavior already
+exists. Current code that merely lacks the planned feature is not a documentation conflict.
 
 ### 2.5 Personal first, team later
 
@@ -368,12 +377,18 @@ Markdown/MDX document in full. The model:
 - marks the change `area` when it is local to one area or `cross_cutting` when it spans areas or
   represents a feature end to end;
 - selects one true existing owner, reports that a new owner is needed, or decides no documented
-  reader need changed.
+  reader need changed;
+- treats planned, proposed, and future-direction statements as intent rather than implemented
+  behavior; and
+- selects a future-intent document when changed code appears to make a conflicting product or
+  architecture decision, so the editing review can request owner judgment instead of rewriting the
+  intent.
 
 Read scope and write scope are deliberately different. Every tracked Markdown/MDX file is readable
 evidence, including arbitrary root docs and generated references. Only documents matched by the
 immutable allowlist are writable. If the true owner selected by the model is read-only or generated,
-Choobi records `documentation_gap`; it does not silently substitute a weaker writable document.
+Choobi gives it a flag-or-silent review because those outcomes cannot write. An attempted update or
+create becomes `documentation_gap`; Choobi never substitutes a weaker writable document.
 
 **Bounded complete-document batching.** If the diff, SOP, changed inputs, and all complete documents
 fit under the prompt ceiling, Choobi makes one ownership call. Otherwise it:
@@ -404,7 +419,7 @@ README files, `docs/**`, and build-plan paths. A new file must also fall under a
 `create_roots` entry in the opted-in repository SOP. Agent instruction files, source code, CI
 configuration, and arbitrary tracked Markdown are not writable.
 
-### 5.3 Create, update, or stay silent
+### 5.3 Create, update, stay silent, or flag
 
 Choobi applies one disposition to each documentation need:
 
@@ -418,6 +433,14 @@ Choobi applies one disposition to each documentation need:
   local renames that reference analysis proves do not alter a documented path or exported name,
   formatting, tests, generated artifacts, temporary experiments, bug fixes that restore
   already-documented behavior, and non-durable implementation details.
+- **Flag** when a changed implementation appears to conflict with documented future intent and
+  reconciling the two would choose a product or architecture direction. The LLM writes a concise
+  owner-review message naming the document, changed code or decision, and conflict. Choobi records
+  `flagged` with reason `future_direction_conflict`, advances the source checkpoint, and writes no
+  document or commit. Mere absence of the future feature is not a conflict. A change that actually
+  implements the planned direction may update its implementation status normally. A flag takes
+  precedence when the same change also makes current-state prose stale; Choobi must not partially
+  update the document while leaving the product-direction conflict unresolved.
 
 Creation requires a qualifying stable concept, no existing owner, explicit `allow_create: true`,
 and a target under a structured SOP `create_roots` entry. Created code blocks must appear verbatim
@@ -436,9 +459,11 @@ shows whether the narrow gate or the model made the decision.
 
 After ownership selection, the editing disposition receives the complete cross-file diff, the one
 chosen document in full, structured placement roots, changed-file evidence, chat decisions, and
-style/SOP context. Each prompt has one hard byte ceiling and fails rather than dropping evidence.
-The runtime returns one native schema-constrained object. The Claude adapter disables tools; the
-Codex adapter runs in an empty read-only workspace and explicitly forbids tool use in its input.
+style/SOP context. It can update, create, stay silent, or flag a future-direction conflict. A flag
+must name the selected document, contain an owner-review summary, and contain no document content
+or source paths. Each prompt has one hard byte ceiling and fails rather than dropping evidence. The
+runtime returns one native schema-constrained object. The Claude adapter disables tools; the Codex
+adapter runs in an empty read-only workspace and explicitly forbids tool use in its input.
 
 ### 5.5 Surgical edit
 
@@ -636,7 +661,7 @@ Each history record contains:
 - documents changed;
 - the one-sentence completion summary;
 - the exact documentation patch;
-- committed, failed, or no-op status; and
+- committed, flagged, failed, or no-op status; and
 - any typed failure reason.
 
 The schema reserves input/output token columns, but the current runtime adapter does not populate

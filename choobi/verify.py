@@ -38,7 +38,7 @@ def _scan_secrets(content: str, policy: Dict[str, Any]) -> None:
 
 
 def check_evidence(policy: Dict[str, Any], *chunks: str) -> None:
-    """Reject secret-shaped prompt inputs before any runtime call."""
+    """Reject secret-shaped prompt inputs or model-authored summaries."""
     for chunk in chunks:
         _scan_secrets(chunk, policy)
 
