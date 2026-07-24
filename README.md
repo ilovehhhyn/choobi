@@ -1,12 +1,14 @@
 # choobi
 
-**Docs that follow your work.**
+**docs that follow your work!**
 
-Choobi is a documentation agent for Git repositories. After you commit a code
-change, Choobi decides whether the change belongs in your docs and, when it does, creates a
-small docs-only follow-up commit. If the docs are already accurate, Choobi stays quiet.
+Choobi is a docs agent for Git repositories. After you commit a code
+change - new features, architectures changes -, choobi helps you make sure the .md files are up to date without you worrying: choobi diligently tracks your code diffs and decides whether the change belongs in your docs and where and writes a small docs-only follow-up commit in a background.
 
-You can also talk to Choobi from Claude Code or Codex or run commands directly from the CLI; you can inspect every decision in a native desktop window.
+You can also summon to choobi from Claude Code or Codex and talk to it, or run commands directly from the CLI.
+
+Choobi's body lives in a UI window launched by typing `choobi` in your CLI.
+
 <p align="center">
   <img width="414" height="404" alt="Screenshot 2026-07-23 at 9 55 23 PM" src="https://github.com/user-attachments/assets/7c82e6ff-1b1e-4ced-8755-1a218829292c" />
 </p>
@@ -19,7 +21,7 @@ You can also talk to Choobi from Claude Code or Codex or run commands directly f
   Markdown documentation before choosing an owner.
 - **Keeps edits focused.** It updates the smallest relevant part of one document and rejects
   changes that cross its write boundary.
-- **Protects future direction.** It treats plans as intent, not shipped behavior, and leaves them
+- **Protects future direction or PRDs.** It treats plans as intent, not shipped behavior, and leaves them
   unchanged while surfacing an LLM-written owner-review message when code contradicts them.
 - **Fits your coding setup.** Use the automatic hook, a coding-agent command, or the CLI.
 - **Leaves an audit trail.** Every update, flag, no-op, and failure is available in the CLI and UI
@@ -32,13 +34,7 @@ You can also talk to Choobi from Claude Code or Codex or run commands directly f
 - At least one supported runtime CLI installed and available on `PATH`: `claude` or `codex`
 - Optional: the GitHub CLI (`gh`) for `choobi pr create`
 
-Choobi delegates authentication to the selected runtime CLI and does not store runtime
-credentials. Both `choobi auth claude` and `choobi auth codex` open that CLI's browser login when
-needed.
-
 ## Install
-
-Choobi is currently installed from source:
 
 ```bash
 git clone https://github.com/ilovehhhyn/choobi.git
@@ -50,31 +46,32 @@ choobi help
 If your shell cannot find `choobi` after installation, add Python's user scripts directory to
 your `PATH`. From the source checkout, you can also run commands as `python3 -m choobi`.
 
-## Quickstart
 
-Set up Choobi once:
+Then, set up Choobi once:
 
 ```bash
 choobi auth claude        # or: choobi auth codex
 choobi install
 ```
 
+
+Choobi delegates authentication to the selected runtime CLI and does not store runtime
+credentials. Use `choobi auth claude` or `choobi auth codex` or open the choobi window via `choobi` to login. 
+
 Choobi uses exactly one active runtime. Authenticating another runtime switches to it only after
 the new login succeeds; a cancelled or failed login leaves the previous runtime active. Having one
 authenticated runtime is enough.
 
-Then initialize each repository you want Choobi to follow:
+## Install per repo:
+
+Initialize each repository you want Choobi to follow:
 
 ```bash
 cd ~/code/my-project
 choobi init
 ```
 
-Now commit code as usual. The installed post-commit hook runs Choobi in the background. When a
-documentation update is warranted, Choobi creates a docs-only follow-up commit with the same
-commit message. Otherwise, it records a no-op and leaves the repository unchanged. If code
-contradicts a documented future direction, Choobi records a flag for owner review and makes no doc
-change.
+Now commit code as usual! Choobi follows and works meticulously. 
 
 **There are three ways to ask Choobi to work:**
 
