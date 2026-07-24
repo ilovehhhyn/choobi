@@ -7,8 +7,9 @@ change, Choobi decides whether the change belongs in your docs and, when it does
 small docs-only follow-up commit. If the docs are already accurate, Choobi stays quiet.
 
 You can also talk to Choobi from Claude Code or Codex or run commands directly from the CLI; you can inspect every decision in a native desktop window.
-
-<img width="414" height="404" alt="Screenshot 2026-07-23 at 9 55 23 PM" src="https://github.com/user-attachments/assets/7c82e6ff-1b1e-4ced-8755-1a218829292c" />
+<p align="center">
+  <img width="414" height="404" alt="Screenshot 2026-07-23 at 9 55 23 PM" src="https://github.com/user-attachments/assets/7c82e6ff-1b1e-4ced-8755-1a218829292c" />
+</p>
 
 
 ## Highlights
