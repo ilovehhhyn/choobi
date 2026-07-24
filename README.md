@@ -14,26 +14,6 @@ Choobi's body lives in a UI window launched by typing `choobi` in your CLI.
 </p>
 
 
-## Highlights
-
-- **Works with your Git workflow.** Initialize choobi in a repository once and you are good to go! work and commit normally.
-- **Finds the right document.** Choobi considers the complete change and the repository's
-  Markdown documentation before choosing an owner.
-- **Keeps edits focused.** It updates the smallest relevant part of one document and rejects
-  changes that cross its write boundary.
-- **Protects future direction or PRDs.** It treats plans as intent, not shipped behavior, and leaves them
-  unchanged while surfacing an LLM-written owner-review message when code contradicts them.
-- **Fits your coding setup.** Use the automatic hook, a coding-agent command, or the CLI.
-- **Leaves an audit trail.** Every update, flag, no-op, and failure is available in the CLI and UI
-  changelog.
-
-## Prerequisites
-
-- Python 3.9 or newer
-- Git
-- At least one supported runtime CLI installed and available on `PATH`: `claude` or `codex`
-- Optional: the GitHub CLI (`gh`) for `choobi pr create`
-
 ## Install
 
 ```bash
@@ -55,8 +35,6 @@ choobi install
 ```
 
 
-Choobi delegates authentication to the selected runtime CLI and does not store runtime
-credentials. Use `choobi auth claude` or `choobi auth codex` or open the choobi window via `choobi` to login. 
 
 Choobi uses exactly one active runtime. Authenticating another runtime switches to it only after
 the new login succeeds; a cancelled or failed login leaves the previous runtime active. Having one
@@ -69,9 +47,23 @@ Initialize each repository you want Choobi to follow:
 ```bash
 cd ~/code/my-project
 choobi init
+choobi                     # to view ui window 
 ```
 
 Now commit code as usual! Choobi follows and works meticulously. 
+
+## Highlights
+
+- **Works with your Git workflow.** Initialize choobi in a repository once and you are good to go! work and commit normally.
+- **Finds the right document.** Choobi considers the complete change and the repository's
+  Markdown documentation before choosing an owner.
+- **Keeps edits focused.** It updates the smallest relevant part of one document and rejects
+  changes that cross its write boundary.
+- **Protects future direction or PRDs.** It treats plans as intent, not shipped behavior, and leaves them
+  unchanged while surfacing an LLM-written owner-review message when code contradicts them.
+- **Fits your coding setup.** Use the automatic hook, a coding-agent command, or the CLI.
+- **Leaves an audit trail.** Every update, flag, no-op, and failure is available in the CLI and UI
+  changelog.
 
 **There are three ways to ask Choobi to work:**
 
@@ -79,6 +71,7 @@ Now commit code as usual! Choobi follows and works meticulously.
 2. **Ask your coding agent.** In Claude Code or Codex, say something like: “choobi update the
    API docs based on what we decided.”
 3. **Run the CLI.** For example, `choobi update --commit HEAD` reviews the latest commit.
+
 
 ## Commands
 
@@ -160,6 +153,13 @@ and declares the allowed destination directories.
 
 Use the **style** tab for preferences that should apply across repositories, such as voice,
 terminology, structure, and verbosity.
+
+## Prerequisites
+
+- Python 3.9 or newer
+- Git
+- At least one supported runtime CLI installed and available on `PATH`: `claude` or `codex`
+- Optional: the GitHub CLI (`gh`) for `choobi pr create`
 
 ## Learn more
 
