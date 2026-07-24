@@ -8,6 +8,9 @@ small docs-only follow-up commit. If the docs are already accurate, Choobi stays
 
 You can also talk to Choobi from Claude Code or Codex or run commands directly from the CLI; you can inspect every decision in a native desktop window.
 
+<img width="381" height="564" alt="Screenshot 2026-07-23 at 8 11 44 PM" src="https://github.com/user-attachments/assets/85cd8d57-a5a0-4fd9-be3f-dcab71b1645b" />
+
+
 ## Highlights
 
 - **Works with your Git workflow.** Initialize choobi in a repository once and you are good to go! work and commit normally.
