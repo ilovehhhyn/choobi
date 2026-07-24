@@ -8,7 +8,7 @@ small docs-only follow-up commit. If the docs are already accurate, Choobi stays
 
 You can also talk to Choobi from Claude Code or Codex or run commands directly from the CLI; you can inspect every decision in a native desktop window.
 
-<img width="511" height="402" alt="Screenshot 2026-07-23 at 8 12 21 PM" src="https://github.com/user-attachments/assets/f80c4c1c-6044-4d02-a6e1-dd8f0c1671a4" />
+<img width="414" height="404" alt="Screenshot 2026-07-23 at 9 55 23 PM" src="https://github.com/user-attachments/assets/7c82e6ff-1b1e-4ced-8755-1a218829292c" />
 
 
 ## Highlights
