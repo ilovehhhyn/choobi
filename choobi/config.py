@@ -53,6 +53,9 @@ class Config:
     # Completion-message verbosity toggle, mirrored in the UI.
     mode: str = "curt"
     onboarded: bool = False
+    # Opt-in: let the runtime read tracked repo files before deciding (agentic read loop,
+    # shared identically by every runtime). Off by default keeps the strict one-shot path.
+    tools: bool = False
     @classmethod
     def load(cls) -> "Config":
         p = config_path()

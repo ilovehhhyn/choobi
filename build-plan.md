@@ -462,8 +462,19 @@ chosen document in full, structured placement roots, changed-file evidence, chat
 style/SOP context. It can update, create, stay silent, or flag a future-direction conflict. A flag
 must name the selected document, contain an owner-review summary, and contain no document content
 or source paths. Each prompt has one hard byte ceiling and fails rather than dropping evidence. The
-runtime returns one native schema-constrained object. The Claude adapter disables tools; the Codex
-adapter runs in an empty read-only workspace and explicitly forbids tool use in its input.
+runtime returns one native schema-constrained object. By default no tools are available: the Claude
+adapter disables tools and the Codex adapter runs in an empty read-only workspace and forbids tool
+use in its input.
+
+**Optional repository reads (`tools`).** When the `tools` config flag (or `CHOOBI_TOOLS`) is set,
+ownership and disposition calls run through one Choobi-owned agentic loop that every runtime shares
+identically — neither CLI runs its own agent. The loop is layered on the same one-shot schema
+primitive: each turn the model either requests repository reads or returns the final answer object.
+Choobi executes reads through a single boundary — files must be inside the repository working tree
+**and** git-tracked — so the model can read only what is already committed here, never anything
+outside the repository and never untracked or gitignored files. Read budgets and the prompt ceiling
+bound the loop, and the output secret scanner still gates every written document. The flag is off by
+default, preserving the strict one-shot, no-tool path.
 
 ### 5.5 Surgical edit
 

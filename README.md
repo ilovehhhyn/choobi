@@ -154,6 +154,19 @@ and declares the allowed destination directories.
 Use the **style** tab for preferences that should apply across repositories, such as voice,
 terminology, structure, and verbosity.
 
+### Let Choobi read the repo (optional)
+
+By default Choobi decides from a single bounded prompt and the model only emits text. You can
+opt into letting the runtime pull additional **tracked** repository files on demand before it
+decides, which helps on large repositories where the bounded context is not enough. Enable it
+by setting `"tools": true` in `~/.choobi/config.json`, or per run with `CHOOBI_TOOLS=1`.
+
+The read boundary is the same for every runtime — Claude and Codex share one Choobi-owned read
+loop, so neither CLI runs its own agent: the model can read only files already committed to this
+repository, never anything outside the repository and never untracked or gitignored files such as
+a local `.env`. Any secret that is already committed is still blocked from the written document by
+the output scanner.
+
 ## Prerequisites
 
 - Python 3.9 or newer

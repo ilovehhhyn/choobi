@@ -325,6 +325,98 @@ class ChoobiTest(unittest.TestCase):
         with self.assertRaises(RuntimeOutputInvalid):
             self._run(UpdateRequest(targets=["docs/api.md"], detached=True, instruction="x"), bad)
 
+    # --- agentic read loop (tools, opt-in, shared by every runtime) ---
+    def test_tools_are_opt_in(self) -> None:
+        self.assertFalse(engine._tools_enabled(config.Config()))
+        self.assertTrue(engine._tools_enabled(config.Config(tools=True)))
+        with mock.patch.dict(os.environ, {"CHOOBI_TOOLS": "1"}):
+            self.assertTrue(engine._tools_enabled(config.Config()))
+        with mock.patch.dict(os.environ, {"CHOOBI_TOOLS": "0"}):
+            self.assertFalse(engine._tools_enabled(config.Config(tools=True)))
+
+    def test_read_repo_file_is_scoped_to_tracked_files(self) -> None:
+        (self.root / "src" / "keep.py").write_text("VALUE = 1\n")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "add keep")
+        (self.root / "untracked.env").write_text("TOKEN=sk-secret\n")  # never committed
+        self.assertIn("VALUE = 1", engine.read_repo_file(self.root, "src/keep.py"))
+        self.assertTrue(engine.read_repo_file(self.root, "untracked.env").startswith("ERROR"))
+        self.assertTrue(engine.read_repo_file(self.root, "../outside.txt").startswith("ERROR"))
+        self.assertTrue(engine.read_repo_file(self.root, "/etc/passwd").startswith("ERROR"))
+
+    def test_agentic_loop_reads_then_answers(self) -> None:
+        (self.root / "src" / "svc.py").write_text("def send(): return 'v2'\n")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "add svc")
+        calls: list = []
+
+        def respond(prompt: str) -> str:
+            calls.append(prompt)
+            if len(calls) == 1:
+                return json.dumps({"step": "read", "read_paths": ["src/svc.py"]})
+            return json.dumps({"step": "answer", "answer": {
+                "disposition": "silent", "target": "", "summary": "", "content": "",
+                "source_paths": []}})
+
+        out = engine._complete_agentic(
+            FakeRuntime(respond), self.root, "PROMPT", "SYS", engine.UPDATE_SCHEMA
+        )
+        self.assertEqual(_parse_disposition(out)["disposition"], "silent")
+        # The file content only appears after the read — not on the first turn.
+        self.assertNotIn("return 'v2'", calls[0])
+        self.assertIn("return 'v2'", calls[1])
+
+    def test_agentic_read_of_untracked_file_returns_error_evidence(self) -> None:
+        (self.root / "secret.env").write_text("TOKEN=sk-live-xyz\n")  # untracked/gitignored-style
+        calls: list = []
+
+        def respond(prompt: str) -> str:
+            calls.append(prompt)
+            if len(calls) == 1:
+                return json.dumps({"step": "read", "read_paths": ["secret.env"]})
+            return json.dumps({"step": "answer", "answer": {
+                "disposition": "silent", "target": "", "summary": "", "content": "",
+                "source_paths": []}})
+
+        engine._complete_agentic(
+            FakeRuntime(respond), self.root, "PROMPT", "SYS", engine.UPDATE_SCHEMA
+        )
+        self.assertIn("ERROR", calls[1])
+        self.assertNotIn("TOKEN=sk-live-xyz", calls[1])
+
+    def test_agentic_loop_stops_after_step_budget(self) -> None:
+        (self.root / "src" / "loop.py").write_text("x = 1\n")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "add loop")
+        runtime = FakeRuntime(
+            lambda _p: json.dumps({"step": "read", "read_paths": ["src/loop.py"]})
+        )
+        with self.assertRaises(RuntimeOutputInvalid):
+            engine._complete_agentic(runtime, self.root, "P", "S", engine.UPDATE_SCHEMA)
+
+    def test_run_update_with_tools_reads_repo_before_writing(self) -> None:
+        (self.root / "src" / "api.py").write_text("def retry(n=5): return n\n")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "raise default retries")
+        head = gitio.resolve(self.root, "HEAD")
+        responses = [
+            # ownership call (agentic) answers directly
+            json.dumps({"step": "answer", "answer": {
+                "action": "doc", "doc": "docs/api.md", "area": "api", "scope": "area"}}),
+            # disposition call (agentic) reads the source, then writes
+            json.dumps({"step": "read", "read_paths": ["src/api.py"]}),
+            json.dumps({"step": "answer", "answer": {
+                "disposition": "update", "target": "docs/api.md",
+                "summary": "documented the new default retry count",
+                "content": "---\ncovers: src/api.py\n---\n# API\n\nRetries up to n times "
+                           "(default 5).\n",
+                "source_paths": ["src/api.py"]}}),
+        ]
+        with mock.patch.dict(os.environ, {"CHOOBI_TOOLS": "1"}):
+            result = run_update(
+                self.root,
+                UpdateRequest(source_commit=head, rev_range=f"{head}^..{head}"),
+                self.cfg, FakeRuntime(responses),
+            )
+        self.assertEqual(result.status, "committed")
+        self.assertIn("docs/api.md", result.docs_changed)
+
     def test_create_denied_is_gap(self) -> None:
         # With the SOP explicitly disabling creation, a would-create is a gap, not a write.
         repo_id = config.checkout_id(gitio.common_dir(self.root))

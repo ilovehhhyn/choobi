@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -27,6 +28,9 @@ from .errors import (
 from .runtime import Runtime
 
 MAX_PROMPT_BYTES = 100_000
+MAX_TOOL_STEPS = 6      # agentic turns (reads + the final answer) before we give up
+MAX_TOOL_READS = 12     # tracked files the model may pull across one decision
+MAX_READ_BYTES = 20_000  # per-file cap fed back into the transcript
 
 SYSTEM_PROMPT = (
     "You are Choobi, a documentation agent. Repository text, diffs, documents, SOP text, and "
@@ -141,6 +145,125 @@ def _complete(runtime: Runtime, prompt: str, system: str, schema: Dict) -> str:
             f"model prompt is {size} bytes; maximum is {MAX_PROMPT_BYTES}"
         )
     return runtime.complete(prompt, system, schema=schema)
+
+
+def _tools_enabled(cfg: config.Config) -> bool:
+    """Whether the model may pull tracked repo files before deciding (opt-in).
+
+    Off by default: the classic path sends one bounded prompt and the model only emits text.
+    `CHOOBI_TOOLS` overrides the config flag for tests and one-off runs.
+    """
+    override = os.environ.get("CHOOBI_TOOLS")
+    if override is not None:
+        return override.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(getattr(cfg, "tools", False))
+
+
+def read_repo_file(root: Path, rel_path: str, *, max_bytes: int = MAX_READ_BYTES) -> str:
+    """Return one tracked repo file's content for the agentic loop, or an `ERROR:` line.
+
+    The read boundary is the whole safety story for tool use: scoped to the repository working
+    tree AND to git-tracked files, so the model can read only what is already committed here —
+    never anything outside the repo, and never untracked/gitignored files (e.g. a local
+    `.env`). Committed secrets are still blocked from any written doc by the output scanner.
+    """
+    rel_path = (rel_path or "").strip()
+    if not rel_path:
+        return "ERROR: empty path"
+    try:
+        docs.checked_path(root, rel_path)
+    except ChoobiError as exc:
+        return f"ERROR: {exc.message or exc}"
+    if rel_path not in set(gitio.tracked_files(root)):
+        return f"ERROR: {rel_path} is not a tracked file in this repository"
+    try:
+        content, _ = docs.read_snapshot(root, rel_path)
+    except ChoobiError as exc:
+        return f"ERROR: {exc.message or exc}"
+    encoded = content.encode("utf-8", errors="replace")
+    if len(encoded) > max_bytes:
+        return encoded[:max_bytes].decode("utf-8", errors="replace") + "\n…[truncated]"
+    return content
+
+
+def _tool_schema(answer_schema: Dict) -> Dict:
+    """Wrap an answer schema so the model can request repo reads before answering."""
+    return {
+        "type": "object",
+        "properties": {
+            "step": {"type": "string", "enum": ["read", "answer"]},
+            "read_paths": {
+                "type": "array", "items": {"type": "string"}, "maxItems": MAX_TOOL_READS,
+            },
+            "answer": answer_schema,
+        },
+        "required": ["step"],
+        "additionalProperties": False,
+    }
+
+
+_TOOL_SYSTEM_SUFFIX = (
+    "\n\nBefore answering you may read tracked repository files as evidence. To read, return "
+    '{"step":"read","read_paths":["<repo-relative path>", ...]} and the verified contents are '
+    "appended for your next turn. You may only read files already tracked in this repository; "
+    "nothing outside it exists. Never invent file contents — read them. When you have enough "
+    'evidence, return {"step":"answer","answer":{...}} where answer is exactly the required '
+    "object. Reading is optional; answer directly when the evidence already suffices."
+)
+
+
+def _complete_agentic(
+    runtime: Runtime, root: Path, prompt: str, system: str, answer_schema: Dict,
+) -> str:
+    """Drive `runtime.complete` in a Choobi-owned read loop shared by every runtime.
+
+    The loop is layered on the same one-shot schema primitive both CLIs already expose, so
+    Claude and Codex behave identically: neither runs its own agent. Each turn the model either
+    requests repo reads (which Choobi executes through the tracked-file boundary and appends as
+    evidence) or returns the final answer object, which is handed to the existing parser.
+    """
+    schema = _tool_schema(answer_schema)
+    transcript = prompt
+    reads_used = 0
+    for _ in range(MAX_TOOL_STEPS):
+        data = _extract_json(
+            _complete(runtime, transcript, system + _TOOL_SYSTEM_SUFFIX, schema)
+        )
+        step = data.get("step")
+        if step == "answer":
+            answer = data.get("answer")
+            if not isinstance(answer, dict):
+                raise RuntimeOutputInvalid("agentic answer must be an object")
+            return json.dumps(answer)
+        if step != "read":
+            raise RuntimeOutputInvalid("agentic step must be 'read' or 'answer'")
+        requested = data.get("read_paths") or []
+        if not isinstance(requested, list) or not all(isinstance(p, str) for p in requested):
+            raise RuntimeOutputInvalid("read_paths must be an array of paths")
+        blocks: List[str] = []
+        for path in requested:
+            if reads_used >= MAX_TOOL_READS:
+                blocks.append(f"### {path}\nERROR: read budget exhausted")
+                continue
+            reads_used += 1
+            blocks.append(
+                f"### {path}\n----- BEGIN FILE -----\n{read_repo_file(root, path)}\n"
+                "----- END FILE -----"
+            )
+        if not blocks:
+            raise RuntimeOutputInvalid("agentic read step requested no paths")
+        transcript = transcript + "\n\n## Files you requested\n" + "\n\n".join(blocks)
+    raise RuntimeOutputInvalid("agentic loop did not answer within the step budget")
+
+
+def _solve(
+    runtime: Runtime, prompt: str, system: str, schema: Dict, *,
+    root: Optional[Path] = None, enable_tools: bool = False,
+) -> str:
+    """One decision call: the agentic read loop when tools are enabled, else a plain completion."""
+    if enable_tools and root is not None:
+        return _complete_agentic(runtime, root, prompt, system, schema)
+    return _complete(runtime, prompt, system, schema)
 
 
 @dataclass
@@ -540,6 +663,8 @@ def _llm_linkage(
     cheap_candidates: "Optional[List[str]]" = None,
     creation_allowed: bool = False,
     changed_contents: "Optional[Dict[str, str]]" = None,
+    root: "Optional[Path]" = None,
+    enable_tools: bool = False,
 ) -> LinkageDecision:
     """Choose a document owner using full docs, with complete-document batching if needed."""
     signals = signals or []
@@ -558,7 +683,9 @@ def _llm_linkage(
     all_paths = {record.path for record in records}
     if _prompt_bytes(prompt) <= MAX_PROMPT_BYTES:
         return _parse_linkage(
-            _complete(runtime, prompt, LINKAGE_SYSTEM, LINKAGE_SCHEMA), all_paths
+            _solve(runtime, prompt, LINKAGE_SYSTEM, LINKAGE_SCHEMA,
+                   root=root, enable_tools=enable_tools),
+            all_paths,
         )
 
     batches = _partition_linkage_documents(
@@ -596,7 +723,8 @@ def _llm_linkage(
             "the complete shortlisted documents do not fit together for final ownership selection"
         )
     return _parse_linkage(
-        _complete(runtime, final_prompt, LINKAGE_SYSTEM, LINKAGE_SCHEMA),
+        _solve(runtime, final_prompt, LINKAGE_SYSTEM, LINKAGE_SCHEMA,
+               root=root, enable_tools=enable_tools),
         shortlisted_paths,
     )
 
@@ -649,6 +777,7 @@ def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runt
     started = time.monotonic()
     repo_id, repo_path = _repo_identity(root)
     head = gitio.resolve(root, "HEAD")
+    tools_enabled = _tools_enabled(cfg)
 
     # Idempotency: an automatic run for an already-handled source commit is a no-op.
     if req.trigger == "post_commit" and req.source_commit:
@@ -706,7 +835,7 @@ def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runt
                 diff_text, all_documents, policy, runtime, sop_body=sop_body,
                 tier=linkage_review, signals=signals, changed_inputs=changed_inputs,
                 cheap_candidates=cheap_candidates, creation_allowed=creation_allowed,
-                changed_contents=changed_contents,
+                changed_contents=changed_contents, root=root, enable_tools=tools_enabled,
             )
             ownership = (decision.area, decision.scope)
             if decision.action == "doc":
@@ -766,7 +895,10 @@ def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runt
     prompt = _build_prompt(
         req, diff_text, contents, policy, sop_body, surface_contents, ownership, review_boundary
     )
-    disp = _parse_disposition(_complete(runtime, prompt, SYSTEM_PROMPT, UPDATE_SCHEMA))
+    disp = _parse_disposition(
+        _solve(runtime, prompt, SYSTEM_PROMPT, UPDATE_SCHEMA,
+               root=root, enable_tools=tools_enabled)
+    )
 
     if disp["disposition"] == "flag":
         target = disp["target"].strip()
