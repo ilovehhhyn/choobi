@@ -5,7 +5,7 @@
 Choobi is a docs agent for Git repositories. After you commit a code
 change - new features, architectures changes -, choobi helps you make sure the .md files are up to date without you worrying: choobi diligently tracks your code diffs and decides whether the change belongs in your docs and where and writes a small docs-only follow-up commit in a background.
 
-You can also summon to choobi from Claude Code or Codex and talk to it, or run commands directly from the CLI.
+You can also summon and chat with choobi from Claude Code or Codex, or you can run commands directly from the CLI.
 
 Choobi's body lives in a UI window launched by typing `choobi` in your CLI.
 
