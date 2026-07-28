@@ -19,8 +19,13 @@ from .errors import CommitFailed, Conflict, NotAllowedPath, TargetNotFound
 GENERATING_ENV = {"CHOOBI_GENERATING": "1"}
 
 
-def _direct_commit(root: Path, writes: Dict[str, str], message: str) -> str:
-    """Commit verified clean targets, restoring them if Git refuses the commit."""
+def _direct_commit(root: Path, writes: Dict[str, Optional[str]], message: str) -> str:
+    """Commit verified clean targets, restoring them if Git refuses the commit.
+
+    A `None` content means delete the path. `git add`/`git commit` on a path list records a
+    removal the same way it records an edit, so one commit can retire a merged-away document
+    alongside the survivor that absorbed it.
+    """
     paths = sorted(writes)
     targets = {rel: docs.checked_path(root, rel) for rel in paths}
     for rel, path in targets.items():
@@ -29,11 +34,15 @@ def _direct_commit(root: Path, writes: Dict[str, str], message: str) -> str:
     originals = {rel: path.read_bytes() if path.exists() else None
                  for rel, path in targets.items()}
     written_hashes = {
-        rel: hashlib.sha256(content.encode()).hexdigest() for rel, content in writes.items()
+        rel: None if content is None else hashlib.sha256(content.encode()).hexdigest()
+        for rel, content in writes.items()
     }
     try:
         for rel, content in writes.items():
             p = targets[rel]
+            if content is None:
+                p.unlink(missing_ok=True)
+                continue
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content)
         return gitio.commit_paths(root, paths, message, GENERATING_ENV)
@@ -76,7 +85,7 @@ def _check_expected(root: Path, expected: Dict[str, Optional[str]]) -> None:
 
 
 def _isolated_commit(
-    root: Path, writes: Dict[str, str], message: str, source_commit: str,
+    root: Path, writes: Dict[str, Optional[str]], message: str, source_commit: str,
     expected_hashes: Dict[str, Optional[str]],
 ) -> str:
     """Build off-checkout, then attach through Git after rechecking the live targets."""
@@ -131,11 +140,15 @@ def _isolated_commit(
 
 def write_and_commit(
     root: Path,
-    writes: Dict[str, str],
+    writes: Dict[str, Optional[str]],
     message: str,
     *,
     source_commit: str,
     expected_hashes: Dict[str, Optional[str]],
 ) -> str:
-    """Write and commit exactly `writes` through one isolated worktree path."""
+    """Write and commit exactly `writes` through one isolated worktree path.
+
+    A `None` value deletes that path. Every path in `writes` needs an entry in
+    `expected_hashes`, so a concurrent edit to any of them aborts the whole commit.
+    """
     return _isolated_commit(root, writes, message, source_commit, expected_hashes)

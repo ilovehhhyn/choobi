@@ -82,6 +82,7 @@ Now commit code as usual! Choobi follows and works meticulously.
 | `choobi install` | Install the Choobi skill for Claude Code and Codex. |
 | `choobi auth [claude\|codex]` | Show runtime status, or authenticate and select one active runtime. |
 | `choobi update [DOC] SCOPE [--chat] [-- TEXT]` | Run a documentation review, optionally pinned to one document. |
+| `choobi merge` | Consolidate genuinely duplicated documents into one and retire the copies, repointing inbound links. |
 | `choobi status` | Show pending, flagged, failed, and no-op work plus the repository checkpoint. |
 | `choobi docs` | Show the review scope Choobi reads, what falls outside it, and the documents Choobi can write. |
 | `choobi changelog [-n N] [--all] [--status S]` | Browse recent Choobi activity. |

@@ -16,7 +16,7 @@ from unittest import mock
 
 from choobi import (
     agent_skill, auth, baseline, cli, commitwriter, config, docs, engine, gitio, help as help_mod,
-    history, hooks, pr, repos, status, verify, views,
+    history, hooks, merge, pr, repos, status, verify, views,
 )
 from choobi.errors import (
     ChoobiError, CommitFailed, Conflict, HookConflict, InvalidScope, InvalidSop, NotAllowedPath,
@@ -892,6 +892,148 @@ class HardeningTest(unittest.TestCase):
                                      instruction="update it"),
                 config.Config(onboarded=True), FakeRuntime(called),
             )
+
+    # --- consolidation (`choobi merge`) ---
+    #
+    # Merge is the only verb that deletes a tracked file, so these tests are written around the
+    # ways a deletion can go wrong rather than around the happy path: content vanishing under
+    # cover of a "merge", a retired document taking other documents' links down with it, and
+    # deletion escaping the writable allowlist.
+
+    def _seed_duplicates(self) -> None:
+        (self.root / "docs/setup.md").write_text(
+            "# Setup\n\nRun the installer.\n\n## Prerequisites\n\nPython 3.11.\n"
+        )
+        (self.root / "docs/setup-copy.md").write_text(
+            "# Setup\n\nRun the installer.\n\n## Troubleshooting\n\nCheck the log.\n"
+        )
+        (self.root / "docs/index.md").write_text(
+            "# Index\n\nStart at [setup](setup-copy.md), see also [api](api.md).\n"
+        )
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-qm", "add duplicated setup docs")
+
+    def _merge_response(self, content: str, absorb: "list[str] | None" = None) -> str:
+        return json.dumps({
+            "merge": True, "survivor": "docs/setup.md",
+            "absorb": absorb if absorb is not None else ["docs/setup-copy.md"],
+            "content": content, "summary": "consolidated the duplicated setup pages",
+        })
+
+    _MERGED = ("# Setup\n\nRun the installer.\n\n## Prerequisites\n\nPython 3.11.\n\n"
+               "## Troubleshooting\n\nCheck the log.\n")
+
+    def test_merge_retires_the_copy_and_repoints_inbound_links(self) -> None:
+        self._seed_duplicates()
+        result = merge.run_merge(
+            self.root,
+            FakeRuntime(self._merge_response(self._MERGED)),
+        )
+        self.assertEqual(result.status, "committed")
+        self.assertFalse((self.root / "docs/setup-copy.md").exists())
+        self.assertNotIn("docs/setup-copy.md", gitio.tracked_files(self.root))
+        survivor = (self.root / "docs/setup.md").read_text()
+        self.assertIn("## Prerequisites", survivor)
+        self.assertIn("## Troubleshooting", survivor)
+        # The link rewrite is mechanical, and it lands in the same commit as the deletion.
+        index = (self.root / "docs/index.md").read_text()
+        self.assertIn("[setup](setup.md)", index)
+        self.assertIn("[api](api.md)", index)
+        self.assertEqual(
+            sorted(gitio.changed_files(self.root, f"{result.docs_commit}^..{result.docs_commit}")),
+            ["docs/index.md", "docs/setup-copy.md", "docs/setup.md"],
+        )
+
+    def test_merge_that_would_lose_a_section_is_refused(self) -> None:
+        """A merge that drops content is a disguised deletion, so it fails verification.
+
+        This is the check that makes the whole verb safe to hand to a model: it cannot use
+        "merge" as a channel for discarding a document, only for folding one in.
+        """
+        self._seed_duplicates()
+        lossy = "# Setup\n\nRun the installer.\n\n## Prerequisites\n\nPython 3.11.\n"
+        with self.assertRaises(VerificationFailed) as caught:
+            merge.run_merge(
+                self.root,
+                FakeRuntime(self._merge_response(lossy)),
+            )
+        self.assertIn("Troubleshooting", str(caught.exception))
+        self.assertTrue((self.root / "docs/setup-copy.md").exists())
+
+    def test_merge_refuses_to_retire_a_document_outside_the_allowlist(self) -> None:
+        (self.root / "CONTRIBUTING.md").write_text("# Setup\n\nRun the installer.\n")
+        (self.root / "docs/setup.md").write_text("# Setup\n\nRun the installer.\n")
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-qm", "read-only near-duplicate")
+        with self.assertRaises(NotAllowedPath):
+            merge.run_merge(
+                self.root,
+                FakeRuntime(self._merge_response("# Setup\n\nRun the installer.\n",
+                                                absorb=["CONTRIBUTING.md"])),
+            )
+        self.assertTrue((self.root / "CONTRIBUTING.md").exists())
+
+    def test_merge_declined_is_the_normal_answer_and_changes_nothing(self) -> None:
+        self._seed_duplicates()
+        before = gitio.resolve(self.root, "HEAD")
+        result = merge.run_merge(
+            self.root,
+            FakeRuntime(json.dumps({"merge": False, "survivor": "", "absorb": [],
+                                    "content": "", "summary": ""})),
+        )
+        self.assertEqual(result.status, "no_op")
+        self.assertEqual(result.reason, "no_duplicate_docs")
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), before)
+        self.assertTrue((self.root / "docs/setup-copy.md").exists())
+
+    def test_merge_rejects_a_survivor_listed_in_absorb(self) -> None:
+        self._seed_duplicates()
+        with self.assertRaises(RuntimeOutputInvalid):
+            merge.run_merge(
+                self.root,
+                FakeRuntime(self._merge_response(
+                    self._MERGED, absorb=["docs/setup.md", "docs/setup-copy.md"]
+                )),
+            )
+
+    def test_relink_resolves_relative_targets_from_each_document_directory(self) -> None:
+        """`./x.md` and `../guides/x.md` can name the same retired file; both must land right."""
+        retired = {"docs/guides/old.md": "docs/api/new.md"}
+        self.assertEqual(
+            merge._relink("see [x](old.md)", "docs/guides/index.md", retired),
+            "see [x](../api/new.md)",
+        )
+        self.assertEqual(
+            merge._relink("see [x](../guides/old.md#frag)", "docs/api/index.md", retired),
+            "see [x](new.md#frag)",
+        )
+        self.assertEqual(
+            merge._relink("see [x](/docs/guides/old.md)", "README.md", retired),
+            "see [x](docs/api/new.md)",
+        )
+        self.assertIsNone(merge._relink("see [x](other.md)", "docs/guides/index.md", retired))
+        self.assertIsNone(
+            merge._relink("see [x](https://e.co/old.md)", "docs/guides/index.md", retired)
+        )
+
+    def test_commit_writer_deletes_on_none_and_restores_on_failure(self) -> None:
+        """`None` content means delete, and a refused commit must leave the tree untouched."""
+        head = gitio.resolve(self.root, "HEAD")
+        (self.root / "docs/gone.md").write_text("# Gone\n")
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-qm", "add doc to delete")
+        hashes = {p: docs.read_snapshot(self.root, p)[1] for p in ("docs/api.md", "docs/gone.md")}
+        sha = commitwriter.write_and_commit(
+            self.root,
+            {"docs/api.md": "# API\n\nRetries twice.\n", "docs/gone.md": None},
+            "docs: retire gone.md",
+            source_commit=gitio.resolve(self.root, "HEAD"),
+            expected_hashes=hashes,
+        )
+        self.assertFalse((self.root / "docs/gone.md").exists())
+        self.assertNotIn("docs/gone.md", gitio.tracked_files(self.root))
+        self.assertIn("Retries twice", (self.root / "docs/api.md").read_text())
+        self.assertNotEqual(sha, head)
 
     def test_auth_status_timeout_is_not_runtime_ready(self) -> None:
         with mock.patch("choobi.auth.shutil.which", return_value="/claude"), \

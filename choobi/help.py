@@ -42,6 +42,13 @@ COMMANDS: List[Command] = [
     {"command": "choobi status",
      "summary": "show pending / failed / no-op jobs and the repo checkpoint",
      "detail": "A deterministic read of local state. No model call."},
+    {"command": "choobi merge",
+     "summary": "consolidate duplicate docs into one and retire the copies",
+     "detail": "Reviews the whole in-scope corpus and, if two documents are genuinely the same "
+               "document, merges them into one and deletes the copies in a single commit. "
+               "Inbound links are repointed to the survivor automatically. No merge is the "
+               "normal answer. Refuses to lose a section, and only ever deletes inside the "
+               "writable allowlist, so `git revert` fully undoes it."},
     {"command": "choobi docs",
      "summary": "show the review scope and the docs choobi can update",
      "detail": "Prints three things: the review scope choobi reads to choose an owner (with "

@@ -12,7 +12,7 @@ from typing import List, Optional
 
 from . import (
     agent_skill, auth, baseline, config, engine, gitio, help as help_mod, history, hooks,
-    locking, pr, repos, status, views,
+    locking, merge, pr, repos, status, views,
 )
 from .errors import ChoobiError, InvalidScope, PendingDocsUpdate, SourceCommitRequired
 from .runtime import get_runtime
@@ -48,6 +48,7 @@ def _build_parser() -> argparse.ArgumentParser:
     h.add_argument("topic", nargs="?", default="")
 
     sub.add_parser("docs", add_help=False)
+    sub.add_parser("merge", add_help=False)
     cl = sub.add_parser("changelog", add_help=False)
     cl.add_argument("-n", "--limit", type=int, default=30)
     cl.add_argument("--all", action="store_true")
@@ -136,6 +137,21 @@ def _cmd_update(args: argparse.Namespace, instruction: Optional[str]) -> int:
     return 0
 
 
+def _cmd_merge() -> int:
+    """Consolidation takes the same repo lock as update: both rewrite documentation."""
+    root = gitio.repo_root(Path.cwd())
+    rt = get_runtime(config.Config.load())
+    lock = locking.RepoLock(config.checkout_id(gitio.common_dir(root)))
+    if not lock.acquire(blocking=False):
+        raise PendingDocsUpdate("another documentation update is active for this repository")
+    try:
+        result = merge.run_merge(root, rt)
+    finally:
+        lock.release()
+    print(result.completion_message or status.NOOP)
+    return 0
+
+
 def _cmd_changelog(args: argparse.Namespace) -> int:
     if args.all:
         records = history.recent(None, limit=args.limit if not args.status else 1000)
@@ -196,6 +212,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 root, repos.review_scope(repo_id, repo_path, policy), engine.MAX_PROMPT_BYTES
             ))
             return 0
+        if args.cmd == "merge":
+            return _cmd_merge()
         if args.cmd == "changelog":
             return _cmd_changelog(args)
         if args.cmd == "show":
