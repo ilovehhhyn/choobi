@@ -827,7 +827,7 @@ class HardeningTest(unittest.TestCase):
         def answer(prompt: str) -> str:
             self.assertIn("ALPHA_SENTINEL", prompt)
             self.assertIn("BETA_SENTINEL", prompt)
-            if "## Final response" in prompt:
+            if "## Ownership response" in prompt:
                 return json.dumps({"action": "create", "doc": "", "area": "public API",
                                    "scope": "cross_cutting"})
             return response
@@ -871,15 +871,21 @@ class HardeningTest(unittest.TestCase):
         self.assertNotIn("truncated", prompt.lower())
 
     def test_oversized_prompt_fails_before_runtime(self) -> None:
+        """The byte ceiling is a hard boundary, checked before any model call.
+
+        The ceiling is patched rather than out-sized with a magic document length, so the
+        test asserts the boundary exists independently of where the constant happens to sit.
+        """
         target = self.root / "docs/api.md"
-        target.write_text(target.read_text() + ("large evidence\n" * 9000))
+        target.write_text(target.read_text() + ("large evidence\n" * 200))
         _git(self.root, "add", "-A")
         _git(self.root, "commit", "-qm", "add oversized doc")
 
         def called(_prompt: str) -> str:
             raise AssertionError("oversized prompt reached runtime")
 
-        with self.assertRaises(ChoobiError):
+        with mock.patch.object(engine, "MAX_PROMPT_BYTES", 1_500), \
+             self.assertRaises(ChoobiError):
             engine.run_update(
                 self.root,
                 engine.UpdateRequest(targets=["docs/api.md"], detached=True,

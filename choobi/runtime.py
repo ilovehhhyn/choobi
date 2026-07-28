@@ -18,31 +18,43 @@ from typing import Any, Dict, Optional
 from . import config
 from .errors import RuntimeUnavailable
 
+# One call reads up to the engine's whole in-scope corpus and, for an edit, writes a complete
+# document back. On a reasoning model with a multi-megabyte prompt that is minutes of work, not
+# seconds, and print mode returns nothing until the reply is complete. 180s was sized for the old
+# 100 KB prompt ceiling and silently turned a slow-but-correct run into a runtime failure.
+COMPLETION_TIMEOUT_SECONDS = 900
+
 
 class Runtime:
     name = "base"
 
     def complete(
-        self, prompt: str, system: str = "", timeout: int = 180,
+        self, prompt: str, system: str = "", timeout: int = COMPLETION_TIMEOUT_SECONDS,
         schema: Optional[Dict[str, Any]] = None,
     ) -> str:
         raise NotImplementedError
 
 
 class ClaudeCliRuntime(Runtime):
-    """Shells the authenticated `claude` CLI in print mode with a JSON envelope."""
+    """Shells the authenticated `claude` CLI in print mode with a JSON envelope.
+
+    The model is pinned rather than inherited from the operator's CLI default: the engine's
+    byte ceiling is only defensible against a known context window, and an inherited default
+    would silently change how much documentation choobi can review.
+    """
 
     name = "claude"
+    model = "claude-opus-5"
 
     def complete(
-        self, prompt: str, system: str = "", timeout: int = 180,
+        self, prompt: str, system: str = "", timeout: int = COMPLETION_TIMEOUT_SECONDS,
         schema: Optional[Dict[str, Any]] = None,
     ) -> str:
         binary = shutil.which("claude")
         if not binary:
             raise RuntimeUnavailable("claude CLI not found on PATH")
         cmd = [binary, "-p", "--output-format", "json", "--tools", "",
-               "--safe-mode", "--no-session-persistence"]
+               "--safe-mode", "--no-session-persistence", "--model", self.model]
         if system:
             cmd += ["--system-prompt", system]
         if schema:
@@ -73,7 +85,7 @@ class CodexCliRuntime(Runtime):
     name = "codex"
 
     def complete(
-        self, prompt: str, system: str = "", timeout: int = 180,
+        self, prompt: str, system: str = "", timeout: int = COMPLETION_TIMEOUT_SECONDS,
         schema: Optional[Dict[str, Any]] = None,
     ) -> str:
         binary = shutil.which("codex")
@@ -136,7 +148,7 @@ class FakeRuntime(Runtime):
         self.last_prompt: Optional[str] = None
 
     def complete(
-        self, prompt: str, system: str = "", timeout: int = 180,
+        self, prompt: str, system: str = "", timeout: int = COMPLETION_TIMEOUT_SECONDS,
         schema: Optional[Dict[str, Any]] = None,
     ) -> str:
         self.last_prompt = prompt

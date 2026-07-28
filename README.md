@@ -83,7 +83,7 @@ Now commit code as usual! Choobi follows and works meticulously.
 | `choobi auth [claude\|codex]` | Show runtime status, or authenticate and select one active runtime. |
 | `choobi update [DOC] SCOPE [--chat] [-- TEXT]` | Run a documentation review, optionally pinned to one document. |
 | `choobi status` | Show pending, flagged, failed, and no-op work plus the repository checkpoint. |
-| `choobi docs` | List the documents Choobi can update in the current repository. |
+| `choobi docs` | Show the review scope Choobi reads, what falls outside it, and the documents Choobi can write. |
 | `choobi changelog [-n N] [--all] [--status S]` | Browse recent Choobi activity. |
 | `choobi show <id>` | Show one activity record and its exact patch. |
 | `choobi style` | Print the resolved documentation style guide. |

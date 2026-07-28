@@ -1,3 +1,7 @@
+---
+covers:
+- choobi/runtime.py
+---
 # How Choobi works
 
 This document describes Choobi's execution model, model boundary, document-selection pipeline,
@@ -100,23 +104,35 @@ Priority behaviors—including retention, deletion, privacy, authentication, per
 credentials, telemetry, security, and user-visible configuration—are called out in the default SOP
 and ownership prompt. They still follow the same full-context review.
 
-### Complete-document batching
+### One ownership call, over a declared corpus
 
-If the diff, SOP, changed-file evidence, and all documents fit, Choobi sends them in one ownership
-call. If they do not fit, Choobi:
+Ownership review is a single call. The diff, the SOP, the changed-file evidence, and every in-scope
+document go in together, so each candidate is weighed against every other candidate, and the
+selected document is then passed in full to the editing call.
 
-1. splits the corpus into bounded batches of complete documents;
-2. asks each batch for possible owners;
-3. makes a final selection over the shortlisted documents in full; and
-4. passes the selected document in full to the editing call.
-
-Choobi never truncates or splits an individual document. A prompt that cannot fit without dropping
-required evidence fails with `context_too_large`.
+Choobi never truncates a document, never splits one across calls, and never reviews a subset. If
+the corpus does not fit the byte ceiling, Choobi fails with `context_too_large` and names the
+largest documents in scope. The remedy is to narrow that scope, which is the repository's decision
+to make and record — not something Choobi infers per run. Reviewing a shortlist instead would be
+worse than failing: a document eliminated in an early pass never gets compared against the
+documents it was actually competing with.
 
 ### Read and write boundaries
 
-Every tracked Markdown or MDX file can participate in ownership review, but only allowlisted files
-are writable. A generated or read-only true owner receives a flag-or-silent editing review because
+Read scope and write scope are separate boundaries, because they answer different questions.
+
+`review_scope` in `policy.yaml` is what Choobi *reads* to choose an owner. It defaults to every
+tracked Markdown and MDX file, minus vendored and generated trees (`node_modules`, `vendor`,
+`dist`, `build`, `target`, `.venv`, `site-packages`). A repository declares where its documentation
+actually lives by setting `review_scope` in its SOP, which replaces that default; `review_exclude`
+adds further carve-outs. Since every in-scope document is sent complete in one call, review scope
+is also the context budget. `choobi docs` prints the resolved picture: what is in scope, what is
+not, and what share of the budget it consumes.
+
+The allowlist is what Choobi may *write*, and it is a strict subset. A read-only file can still be
+the true owner of a change, which is why review scope has to be wider than write scope.
+
+A generated or read-only true owner receives a flag-or-silent editing review because
 neither outcome writes the file. If the model instead requests an update, Choobi records a visible
 `documentation_gap`; it does not silently update a weaker substitute such as the root README.
 
@@ -269,9 +285,17 @@ A failed or interrupted automatic run remains visible in history if it reached t
 `~/.choobi/logs/hook.log` because a detached process cannot safely print after the terminal prompt
 has returned.
 
-The full prompt has a 100,000-byte UTF-8 ceiling. Choobi fails with `context_too_large` rather than
-truncating a diff, SOP, changed file, document, or editing target and pretending the repository was
-fully reconciled.
+The full prompt has a 2,500,000-byte UTF-8 ceiling, sized against the 1M-token context window of
+the model the runtime pins. Choobi fails with `context_too_large` rather than truncating a diff,
+SOP, changed file, document, or editing target and pretending the repository was fully reconciled.
+The model is pinned rather than inherited from the operator's CLI default, because a byte ceiling is
+only meaningful against a known context window.
+
+Every runtime call, across the Claude, Codex, and fake adapters, has a 900-second timeout. One call
+reads up to the whole in-scope corpus and, for an edit, writes a complete document back, which is
+minutes of work on a reasoning model with a multi-megabyte prompt, and print mode returns nothing
+until the reply is complete. The earlier 180-second limit was sized for the old 100 KB prompt
+ceiling and turned a slow but correct run into a runtime failure.
 
 ## Development and evaluation
 

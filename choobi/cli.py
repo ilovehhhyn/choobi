@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import (
-    agent_skill, auth, config, engine, gitio, help as help_mod, history, hooks, locking, pr,
-    status, views,
+    agent_skill, auth, baseline, config, engine, gitio, help as help_mod, history, hooks,
+    locking, pr, repos, status, views,
 )
 from .errors import ChoobiError, InvalidScope, PendingDocsUpdate, SourceCommitRequired
 from .runtime import get_runtime
@@ -189,7 +189,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(help_mod.render(args.topic))
             return 0
         if args.cmd == "docs":
-            print(views.render_docs(gitio.repo_root(Path.cwd())))
+            root = gitio.repo_root(Path.cwd())
+            policy = baseline.policy()
+            repo_id, repo_path = engine.repo_identity(root)
+            print(views.render_docs(
+                root, repos.review_scope(repo_id, repo_path, policy), engine.MAX_PROMPT_BYTES
+            ))
             return 0
         if args.cmd == "changelog":
             return _cmd_changelog(args)

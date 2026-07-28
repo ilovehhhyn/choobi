@@ -43,9 +43,11 @@ COMMANDS: List[Command] = [
      "summary": "show pending / failed / no-op jobs and the repo checkpoint",
      "detail": "A deterministic read of local state. No model call."},
     {"command": "choobi docs",
-     "summary": "list the docs choobi can update in this repo",
-     "detail": "Lists the writable documents (README, docs/**, *-plan.md) and the code each "
-               "declares via its covers: front matter."},
+     "summary": "show the review scope and the docs choobi can update",
+     "detail": "Prints three things: the review scope choobi reads to choose an owner (with "
+               "its share of the context budget), the documents outside that scope, and the "
+               "writable documents plus the code each declares via its covers: front matter. "
+               "Narrow review scope with review_scope in the repo SOP (choobi style)."},
     {"command": "choobi changelog [-n N] [--all] [--status S]",
      "summary": "browse choobi's activity log",
      "detail": "Newest-first list of runs for this repo. -n limits count, --all spans every "

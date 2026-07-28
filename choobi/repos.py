@@ -92,6 +92,21 @@ create_roots:
   - docs/public/reference/
   - docs/internal/plans/
   - docs/internal/features/
+
+# Where this repository's documentation actually lives. choobi reads every in-scope document
+# complete in one call, so this is also the context budget. Setting it REPLACES choobi's
+# default of every tracked .md/.mdx — narrow it to the docs a human would plausibly own.
+# Leave it out on a small repository. Run `choobi docs` to see the resolved picture.
+# review_scope:
+#   - "docs/**/*.md"
+#   - "docs/**/*.mdx"
+#   - "README.md"
+#   - "**/README.md"
+
+# Carve-outs, ADDED to choobi's defaults (node_modules, vendor, dist, build, target, .venv).
+# Use this for vendored or generated reference dumps checked into a documentation path.
+# review_exclude:
+#   - "docs/**/generated/**"
 ---
 # choobi SOP: {repo}
 
@@ -237,6 +252,31 @@ def _create_roots(front_matter: Dict[str, Any]) -> List[str]:
             raise InvalidSop(f"invalid create root: {value}")
         roots.append(root)
     return roots
+
+
+def _glob_list(front_matter: Dict[str, Any], key: str) -> List[str]:
+    raw = front_matter.get(key)
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(v, str) and v.strip() for v in raw):
+        raise InvalidSop(f"{key} must be a list of glob patterns")
+    return [v.strip() for v in raw]
+
+
+def review_scope(repo_id: str, repo_path: str, policy: Dict[str, Any]) -> docs.ReviewScope:
+    """The effective read boundary for this repository.
+
+    A repository's SOP declares where its documentation actually lives. `review_scope` in the
+    SOP *replaces* the baseline include list (declaring a location is the whole point), while
+    `review_exclude` *appends* to the baseline carve-outs. Both are plain glob lists so the
+    resolved boundary is readable without running anything.
+    """
+    fm, _ = _split_front_matter(read_sop(repo_id, repo_path)[0])
+    sop_include = _glob_list(fm, "review_scope")
+    return docs.ReviewScope(
+        include=sop_include or list(policy["review_scope"]),
+        exclude=[*policy["review_exclude"], *_glob_list(fm, "review_exclude")],
+    )
 
 
 def sop_allows_create(repo_id: str, repo_path: str) -> bool:
