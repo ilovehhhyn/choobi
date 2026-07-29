@@ -36,16 +36,14 @@ from .errors import (
 )
 from .runtime import Runtime
 
-# The runtime's context window expressed in bytes, because bytes are what we can measure
-# without an API key (the runtimes authenticate as CLIs, so `count_tokens` is unavailable).
-# Markdown and source tokenize at roughly 3.5-4 bytes per token, so 2.5 MB is ~625-715k input
-# tokens against the 1M-token window runtime.py pins. The remaining ~300k tokens are headroom
-# for the system contract, the output schema, thinking, and the reply itself.
+# The prompt ceiling belongs to the runtime, not to this module: it is derived from the context
+# window of the model that runtime pins (see runtime.py). It is a hard ceiling that fails loudly,
+# not a batching budget — there is exactly one ownership call over the complete in-scope corpus,
+# and a repository whose corpus does not fit narrows its declared review scope. See `choobi docs`.
 #
-# This is a hard ceiling that fails loudly, not a batching budget. There is exactly one
-# ownership call over the complete in-scope corpus; a repository whose corpus does not fit
-# narrows its declared review scope. See `choobi docs`.
-MAX_PROMPT_BYTES = 2_500_000
+# The three tool budgets below are still flat constants sized against nothing in particular. They
+# are the same species of number MAX_PROMPT_BYTES was and should probably also derive from the
+# window; left alone here to keep this change to one concern.
 
 MAX_TOOL_STEPS = 6      # agentic turns (reads + the final answer) before we give up
 MAX_TOOL_READS = 12     # tracked files the model may pull across one decision
@@ -144,9 +142,10 @@ def complete_once(runtime: Runtime, prompt: str, system: str, schema: Dict) -> s
         size = len(prompt.encode("utf-8"))
     except UnicodeError as exc:
         raise RuntimeOutputInvalid("prompt evidence is not valid UTF-8 text") from exc
-    if size > MAX_PROMPT_BYTES:
+    if size > runtime.prompt_budget_bytes:
         raise ContextTooLarge(
-            f"model prompt is {size} bytes; maximum is {MAX_PROMPT_BYTES}"
+            f"model prompt is {size:,} bytes; the {runtime.model} ceiling is "
+            f"{runtime.prompt_budget_bytes:,}"
         )
     return runtime.complete(prompt, system, schema=schema)
 
@@ -587,7 +586,7 @@ def _llm_linkage(
         diff_text, records, sop_body, tier, signals, changed_inputs, cheap_candidates,
         creation_allowed, changed_contents,
     )
-    check_review_budget(prompt, records)
+    check_review_budget(runtime, prompt, records)
     return _parse_linkage(
         _solve(runtime, prompt, LINKAGE_SYSTEM, LINKAGE_SCHEMA,
                root=root, enable_tools=enable_tools),
@@ -595,7 +594,9 @@ def _llm_linkage(
     )
 
 
-def check_review_budget(prompt: str, records: List[docs.TrackedDocument]) -> None:
+def check_review_budget(
+    runtime: Runtime, prompt: str, records: List[docs.TrackedDocument]
+) -> None:
     """Fail with the corpus arithmetic and the largest offenders, not just a byte count.
 
     The remedy is always the same — narrow `review_scope` in the repository SOP — so the
@@ -603,7 +604,7 @@ def check_review_budget(prompt: str, records: List[docs.TrackedDocument]) -> Non
     them. There is no fallback path: choobi reviews the declared corpus or nothing.
     """
     size = _prompt_bytes(prompt)
-    if size <= MAX_PROMPT_BYTES:
+    if size <= runtime.prompt_budget_bytes:
         return
     corpus = sum(_prompt_bytes(record.content) for record in records)
     biggest = sorted(records, key=lambda r: len(r.content), reverse=True)[:10]
@@ -611,7 +612,8 @@ def check_review_budget(prompt: str, records: List[docs.TrackedDocument]) -> Non
         f"  {_prompt_bytes(record.content):>9,}  {record.path}" for record in biggest
     )
     raise ContextTooLarge(
-        f"ownership review needs {size:,} bytes but the ceiling is {MAX_PROMPT_BYTES:,} "
+        f"ownership review needs {size:,} bytes but the {runtime.model} ceiling is "
+        f"{runtime.prompt_budget_bytes:,} "
         f"({len(records)} documents totalling {corpus:,} bytes, plus the diff and changed "
         f"inputs). Narrow review_scope in this repository's SOP (`choobi style`) or add "
         f"review_exclude entries; `choobi docs` shows the resolved scope. Largest documents "

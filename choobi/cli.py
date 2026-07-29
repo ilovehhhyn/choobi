@@ -209,7 +209,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             policy = baseline.policy()
             repo_id, repo_path = engine.repo_identity(root)
             print(views.render_docs(
-                root, repos.review_scope(repo_id, repo_path, policy), engine.MAX_PROMPT_BYTES
+                root, repos.review_scope(repo_id, repo_path, policy),
+                get_runtime(config.Config.load()),
             ))
             return 0
         if args.cmd == "merge":

@@ -533,11 +533,18 @@ writers. The fixture evaluation reports decision accuracy, write precision, reca
 required-fact recall, preservation, changed-line ceilings, and a finite set of forbidden-claim
 probes.
 
-The complete prompt has a 2,500,000-byte UTF-8 ceiling, sized against the 1M-token context window of
-the model `runtime.py` pins. The model is pinned rather than inherited from the operator's CLI
-default, because a byte ceiling means nothing against an unknown context window. Choobi fails with
-`context_too_large` rather than truncating evidence the model would need for a correct disposition or
-full-file output.
+The prompt ceiling is a property of the runtime, not of the engine. Each adapter declares the model
+it pins and that model's context window; the ceiling is `window × 0.8 × 3.5 bytes/token`, the
+remaining fifth reserved for the system contract, the output schema, thinking, and the reply. The
+Claude adapter pins `claude-opus-5` at a 1M-token window, so its ceiling is 2,800,000 bytes; the
+Codex adapter declares a conservative 200,000-token floor because `--ignore-user-config` means
+Choobi cannot verify which model it will get.
+
+Deriving the number rather than declaring it is what makes the pin honest: a byte ceiling is a claim
+about a context window, so an adapter inheriting the operator's CLI default would be asserting that
+claim about a window nobody knows, and the model and the ceiling could drift apart silently. Choobi
+fails with `context_too_large` rather than truncating evidence the model would need for a correct
+disposition or full-file output.
 
 There is no global scheduler, durable queue, result cache, cancellation, call budget, daily budget,
 or token accounting yet. These remain release work; the product must not claim those metrics until

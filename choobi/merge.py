@@ -231,7 +231,7 @@ def run_merge(root: Path, runtime: Runtime) -> MergeResult:
 
     verify.check_evidence(policy, sop_body, *(r.content for r in records.values()))
     prompt = _build_prompt(list(records.values()), sop_body)
-    engine.check_review_budget(prompt, list(records.values()))
+    engine.check_review_budget(runtime, prompt, list(records.values()))
     plan = _parse(engine.complete_once(runtime, prompt, MERGE_SYSTEM, MERGE_SCHEMA), records)
 
     if plan is None:

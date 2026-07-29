@@ -334,12 +334,14 @@ class ChoobiTest(unittest.TestCase):
         def unreachable(_prompt: str) -> str:
             raise AssertionError("over-budget corpus reached the runtime")
 
-        with mock.patch.object(engine, "MAX_PROMPT_BYTES", 4_000):
-            with self.assertRaises(ContextTooLarge) as caught:
-                engine._llm_linkage(
-                    "+ feature = true", self._linkage_corpus(), baseline.policy(),
-                    FakeRuntime(unreachable), sop_body="SOP", changed_inputs=["src/a.py"],
-                )
+        # A 2,000-token window derives a ~5,600-byte ceiling, so the corpus is over budget by
+        # the same arithmetic production uses rather than by a patched constant.
+        with self.assertRaises(ContextTooLarge) as caught:
+            engine._llm_linkage(
+                "+ feature = true", self._linkage_corpus(), baseline.policy(),
+                FakeRuntime(unreachable, context_window_tokens=2_000),
+                sop_body="SOP", changed_inputs=["src/a.py"],
+            )
         message = str(caught.exception)
         self.assertIn("review_scope", message)
         self.assertIn("4 documents", message)
@@ -561,7 +563,7 @@ class ChoobiTest(unittest.TestCase):
     def test_views_docs_and_changelog(self) -> None:
         r = self._run(UpdateRequest(source_commit=self.head, rev_range=f"{self.head}^..{self.head}",
                                     trigger="post_commit"), UPDATE_RESP)
-        docs_out = views.render_docs(self.root, _full_scope(), engine.MAX_PROMPT_BYTES)
+        docs_out = views.render_docs(self.root, _full_scope(), FakeRuntime(""))
         self.assertIn("docs/api.md", docs_out)
         self.assertIn("covers: src/api.py", docs_out)
         self.assertIn("review scope", docs_out)

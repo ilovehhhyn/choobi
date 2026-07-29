@@ -24,9 +24,33 @@ from .errors import RuntimeUnavailable
 # 100 KB prompt ceiling and silently turned a slow-but-correct run into a runtime failure.
 COMPLETION_TIMEOUT_SECONDS = 900
 
+# Documentation and source tokenize at roughly 3.5-4 bytes per token. The prompt ceiling uses the
+# low figure, so a corpus that passes the check cannot overflow the window on denser-than-expected
+# text. This is a conversion factor, not a tuning knob: the runtimes authenticate as CLIs, so
+# `count_tokens` is unavailable and bytes are the only thing choobi can measure.
+BYTES_PER_TOKEN = 3.5
+
+# Share of the context window the prompt may claim. The rest carries the system contract, the
+# output schema, thinking, and the reply — which for an edit is a complete document.
+PROMPT_SHARE_OF_WINDOW = 0.8
+
 
 class Runtime:
+    """One model call, plus the two facts the engine needs to size a prompt for it.
+
+    `context_window_tokens` is the honest reason the model is pinned per adapter. A byte ceiling
+    is a claim about a context window, so an adapter that inherited the operator's CLI default
+    would be making that claim about a window nobody knows. Declaring both together means the
+    pair cannot drift, and `prompt_budget_bytes` is derived rather than restated.
+    """
+
     name = "base"
+    model = ""
+    context_window_tokens = 0
+
+    @property
+    def prompt_budget_bytes(self) -> int:
+        return int(self.context_window_tokens * PROMPT_SHARE_OF_WINDOW * BYTES_PER_TOKEN)
 
     def complete(
         self, prompt: str, system: str = "", timeout: int = COMPLETION_TIMEOUT_SECONDS,
@@ -36,15 +60,11 @@ class Runtime:
 
 
 class ClaudeCliRuntime(Runtime):
-    """Shells the authenticated `claude` CLI in print mode with a JSON envelope.
-
-    The model is pinned rather than inherited from the operator's CLI default: the engine's
-    byte ceiling is only defensible against a known context window, and an inherited default
-    would silently change how much documentation choobi can review.
-    """
+    """Shells the authenticated `claude` CLI in print mode with a JSON envelope."""
 
     name = "claude"
     model = "claude-opus-5"
+    context_window_tokens = 1_000_000  # Claude Opus 5: 1M is both the default and the maximum.
 
     def complete(
         self, prompt: str, system: str = "", timeout: int = COMPLETION_TIMEOUT_SECONDS,
@@ -83,6 +103,14 @@ class CodexCliRuntime(Runtime):
     """
 
     name = "codex"
+
+    # `--ignore-user-config` means choobi gets the Codex CLI's own default model, not the
+    # operator's configured one, and choobi cannot verify that model's context window from here.
+    # So this window is a declared floor rather than a measurement. It is deliberately the safe
+    # direction to be wrong in: an under-sized budget fails early with `context_too_large`, which
+    # names the remedy, where an over-sized one fails late as an opaque CLI rejection. Raise it
+    # only against a verified window for a model this adapter also pins.
+    context_window_tokens = 200_000
 
     def complete(
         self, prompt: str, system: str = "", timeout: int = COMPLETION_TIMEOUT_SECONDS,
@@ -142,10 +170,16 @@ class FakeRuntime(Runtime):
     """
 
     name = "fake"
+    model = "fake"
+    context_window_tokens = 1_000_000
 
-    def __init__(self, response) -> None:
+    def __init__(self, response, context_window_tokens: Optional[int] = None) -> None:
         self.response = list(response) if isinstance(response, list) else response
         self.last_prompt: Optional[str] = None
+        # Tests that exercise the byte ceiling shrink the window here rather than patching a
+        # module constant, so they assert against the same derivation production uses.
+        if context_window_tokens is not None:
+            self.context_window_tokens = context_window_tokens
 
     def complete(
         self, prompt: str, system: str = "", timeout: int = COMPLETION_TIMEOUT_SECONDS,

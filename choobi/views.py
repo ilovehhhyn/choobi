@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import baseline, config, docs as docs_mod
+from .runtime import Runtime
 
 _GLYPH = {"committed": "✓", "no_op": "·", "flagged": "!", "failed": "✕"}
 
@@ -21,19 +22,21 @@ def _kb(n: int) -> str:
     return f"{n / 1024:,.0f} KB"
 
 
-def render_docs(root: Path, scope: docs_mod.ReviewScope, budget: int) -> str:
+def render_docs(root: Path, scope: docs_mod.ReviewScope, runtime: Runtime) -> str:
     """The three questions: where the docs are, which ones choobi reads, which it may write.
 
     Read scope and write scope are different boundaries and get separate sections, because
-    conflating them is what makes "why didn't choobi pick that doc" unanswerable.
+    conflating them is what makes "why didn't choobi pick that doc" unanswerable. The budget is
+    read off the runtime so the number shown is the one the next run will actually enforce.
     """
     policy = baseline.policy()
+    budget = runtime.prompt_budget_bytes
     inside, outside = docs_mod.scope_census(root, scope)
     reviewed = sum(size for _, size in inside)
     lines = [
         "review scope — the docs choobi reads to choose an owner:",
         f"  {len(inside)} documents, {_kb(reviewed)} of the {_kb(budget)} context budget "
-        f"({reviewed * 100 // budget if budget else 0}%)",
+        f"({reviewed * 100 // budget if budget else 0}%)  [{runtime.model}]",
         "  include: " + ", ".join(scope.include),
         "  exclude: " + ", ".join(scope.exclude),
     ]

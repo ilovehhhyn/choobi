@@ -22,7 +22,10 @@ from choobi.errors import (
     ChoobiError, CommitFailed, Conflict, HookConflict, InvalidScope, InvalidSop, NotAllowedPath,
     PendingDocsUpdate, RuntimeOutputInvalid, VerificationFailed,
 )
-from choobi.runtime import ClaudeCliRuntime, CodexCliRuntime, FakeRuntime, get_runtime
+from choobi import runtime as runtime_mod
+from choobi.runtime import (
+    ClaudeCliRuntime, CodexCliRuntime, FakeRuntime, get_runtime,
+)
 from choobi.ui import server as ui_server
 
 
@@ -884,13 +887,13 @@ class HardeningTest(unittest.TestCase):
         def called(_prompt: str) -> str:
             raise AssertionError("oversized prompt reached runtime")
 
-        with mock.patch.object(engine, "MAX_PROMPT_BYTES", 1_500), \
-             self.assertRaises(ChoobiError):
+        with self.assertRaises(ChoobiError):
             engine.run_update(
                 self.root,
                 engine.UpdateRequest(targets=["docs/api.md"], detached=True,
                                      instruction="update it"),
-                config.Config(onboarded=True), FakeRuntime(called),
+                config.Config(onboarded=True),
+                FakeRuntime(called, context_window_tokens=600),
             )
 
     # --- consolidation (`choobi merge`) ---
@@ -1034,6 +1037,52 @@ class HardeningTest(unittest.TestCase):
         self.assertNotIn("docs/gone.md", gitio.tracked_files(self.root))
         self.assertIn("Retries twice", (self.root / "docs/api.md").read_text())
         self.assertNotEqual(sha, head)
+
+    def test_every_runtime_declares_a_window_and_derives_its_own_ceiling(self) -> None:
+        """The ceiling is a claim about a context window, so it lives with the pinned model.
+
+        A runtime that declared no window would silently get a zero budget, and one that
+        inherited the operator's CLI default would be asserting a ceiling against a window
+        nobody knows. Both are the failure this derivation exists to prevent.
+        """
+        for rt in (ClaudeCliRuntime(), CodexCliRuntime(), FakeRuntime("")):
+            self.assertGreater(rt.context_window_tokens, 0, rt.name)
+            self.assertEqual(
+                rt.prompt_budget_bytes,
+                int(rt.context_window_tokens * runtime_mod.PROMPT_SHARE_OF_WINDOW
+                    * runtime_mod.BYTES_PER_TOKEN),
+                rt.name,
+            )
+            # The reserved share must leave room for a full 128k-token reply.
+            reserved = rt.context_window_tokens - (
+                rt.prompt_budget_bytes / runtime_mod.BYTES_PER_TOKEN
+            )
+            self.assertGreater(reserved, 0, rt.name)
+
+        self.assertEqual(ClaudeCliRuntime().model, "claude-opus-5")
+        self.assertEqual(ClaudeCliRuntime().prompt_budget_bytes, 2_800_000)
+        # Codex is a declared floor, not a measurement, so it must stay below Claude's.
+        self.assertLess(
+            CodexCliRuntime().prompt_budget_bytes, ClaudeCliRuntime().prompt_budget_bytes
+        )
+
+    def test_claude_runtime_passes_the_pinned_model_to_the_cli(self) -> None:
+        captured: "list[list[str]]" = []
+
+        class _Proc:
+            returncode = 0
+            stdout = '{"result": "{}"}'
+            stderr = ""
+
+        def fake_run(cmd, **_kwargs):
+            captured.append(cmd)
+            return _Proc()
+
+        with mock.patch("choobi.runtime.shutil.which", return_value="/claude"), \
+             mock.patch("choobi.runtime.subprocess.run", side_effect=fake_run):
+            ClaudeCliRuntime().complete("prompt", "system")
+        self.assertIn("--model", captured[0])
+        self.assertEqual(captured[0][captured[0].index("--model") + 1], "claude-opus-5")
 
     def test_auth_status_timeout_is_not_runtime_ready(self) -> None:
         with mock.patch("choobi.auth.shutil.which", return_value="/claude"), \
