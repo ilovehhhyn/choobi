@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import yaml
 
 from . import baseline, config, docs, gitio, history
-from .errors import InvalidSnapshot, InvalidSop
+from .errors import InvalidScopeFile, InvalidSnapshot, InvalidSop
 
 # Doc categories, in display order. Each is (label, path-predicate). First match wins.
 _CATEGORIES: List[Tuple[str, Any]] = [
@@ -237,6 +237,66 @@ def _create_roots(front_matter: Dict[str, Any]) -> List[str]:
             raise InvalidSop(f"invalid create root: {value}")
         roots.append(root)
     return roots
+
+
+# Where a repository declares its own documentation boundary. This lives IN the repository, not
+# in the local SOP, because it is a fact about the repository rather than an operator preference:
+# it belongs in a pull request, travels to teammates and to fresh clones, and moves in the same
+# commit that moves the documentation. The SOP keeps the genuinely personal settings.
+SCOPE_FILE = ".choobi/scope.yaml"
+
+
+def scope_file_path(root: Path) -> Path:
+    return root / SCOPE_FILE
+
+
+def _glob_list(mapping: Dict[str, Any], key: str, source: str) -> List[str]:
+    raw = mapping.get(key)
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(v, str) and v.strip() for v in raw):
+        raise InvalidScopeFile(f"{key} in {source} must be a list of glob patterns")
+    patterns = [v.strip() for v in raw]
+    for pattern in patterns:
+        path = Path(pattern)
+        if path.is_absolute() or ".." in path.parts:
+            raise InvalidScopeFile(f"invalid glob in {source}: {pattern}")
+    return patterns
+
+
+def read_scope_file(root: Path) -> Dict[str, Any]:
+    """Parse the repository's scope declaration, or return an empty mapping if it has none.
+
+    The file is untrusted repository content, so it is read as data and never as instructions.
+    It can only narrow what choobi *reads*; the writable allowlist is immutable baseline policy,
+    so nothing here can widen where choobi writes.
+    """
+    p = scope_file_path(root)
+    if not p.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(p.read_text()) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise InvalidScopeFile(f"could not read {SCOPE_FILE}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise InvalidScopeFile(f"{SCOPE_FILE} must be a YAML mapping")
+    return data
+
+
+def review_scope(root: Path, policy: Dict[str, Any]) -> docs.ReviewScope:
+    """The effective read boundary for this repository.
+
+    `review_scope` in the repository's scope file *replaces* the baseline include list, since
+    declaring a location is the whole point of writing one. `review_exclude` *appends* to the
+    baseline carve-outs. Both are plain glob lists, so the resolved boundary is readable without
+    running anything — and reviewable in the diff that changes it.
+    """
+    declared = read_scope_file(root)
+    include = _glob_list(declared, "review_scope", SCOPE_FILE)
+    return docs.ReviewScope(
+        include=include or list(policy["review_scope"]),
+        exclude=[*policy["review_exclude"], *_glob_list(declared, "review_exclude", SCOPE_FILE)],
+    )
 
 
 def sop_allows_create(repo_id: str, repo_path: str) -> bool:

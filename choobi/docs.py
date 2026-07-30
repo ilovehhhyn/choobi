@@ -129,6 +129,22 @@ def writable_docs(root: Path, policy: Dict[str, Any]) -> List[str]:
     return sorted(f for f in gitio.tracked_files(root) if is_allowed(f, policy))
 
 
+@dataclass(frozen=True)
+class ReviewScope:
+    """The resolved read boundary: include globs minus exclude globs."""
+
+    include: List[str]
+    exclude: List[str]
+
+    def covers(self, rel_path: str) -> bool:
+        path = Path(rel_path)
+        if path.is_absolute() or ".." in path.parts or path.as_posix() != rel_path:
+            return False
+        if any(_glob_to_re(p).match(rel_path) for p in self.exclude):
+            return False
+        return any(_glob_to_re(p).match(rel_path) for p in self.include)
+
+
 _GENERATED_MARKERS = (
     "@generated",
     "auto-generated",
@@ -145,16 +161,19 @@ def looks_generated(text: str) -> bool:
     return any(marker in lowered for marker in _GENERATED_MARKERS)
 
 
-def tracked_documents(root: Path, policy: Dict[str, Any]) -> List[TrackedDocument]:
-    """Return every tracked Markdown/MDX document with its complete current content.
+def tracked_documents(
+    root: Path, policy: Dict[str, Any], scope: ReviewScope
+) -> List[TrackedDocument]:
+    """Return every in-scope tracked document with its complete current content.
 
     Read-only and generated documents are intentionally included: either may be the true
     owner of a change, in which case the engine must surface a documentation gap instead of
-    silently choosing a weaker writable substitute.
+    silently choosing a weaker writable substitute. Out-of-scope documents are the one
+    deliberate recall sacrifice, and it is declared in policy rather than inferred.
     """
     records: List[TrackedDocument] = []
     for path in sorted(gitio.tracked_files(root)):
-        if Path(path).suffix.lower() not in {".md", ".mdx"}:
+        if not scope.covers(path):
             continue
         content, _ = read_snapshot(root, path)
         records.append(TrackedDocument(
@@ -164,6 +183,22 @@ def tracked_documents(root: Path, policy: Dict[str, Any]) -> List[TrackedDocumen
             generated=looks_generated(content),
         ))
     return records
+
+
+def scope_census(root: Path, scope: ReviewScope) -> "Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]":
+    """Every tracked Markdown document as (path, bytes), split into in-scope and excluded.
+
+    This is the data behind `choobi docs`: the mental model of where the docs are, which of
+    them choobi reviews, and how much context that costs.
+    """
+    inside: List[Tuple[str, int]] = []
+    outside: List[Tuple[str, int]] = []
+    for path in sorted(gitio.tracked_files(root)):
+        if Path(path).suffix.lower() not in {".md", ".mdx"}:
+            continue
+        size = (root / path).stat().st_size if (root / path).is_file() else 0
+        (inside if scope.covers(path) else outside).append((path, size))
+    return inside, outside
 
 
 def _front_matter(text: str) -> Optional[Dict[str, Any]]:

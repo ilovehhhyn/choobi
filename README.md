@@ -82,13 +82,35 @@ Now commit code as usual! Choobi follows and works meticulously.
 | `choobi install` | Install the Choobi skill for Claude Code and Codex. |
 | `choobi auth [claude\|codex]` | Show runtime status, or authenticate and select one active runtime. |
 | `choobi update [DOC] SCOPE [--chat] [-- TEXT]` | Run a documentation review, optionally pinned to one document. |
+| `choobi merge` | Consolidate genuinely duplicated documents into one and retire the copies, repointing inbound links. |
 | `choobi status` | Show pending, flagged, failed, and no-op work plus the repository checkpoint. |
-| `choobi docs` | List the documents Choobi can update in the current repository. |
+| `choobi docs` | Show the review scope Choobi reads, what falls outside it, and the documents Choobi can write. |
 | `choobi changelog [-n N] [--all] [--status S]` | Browse recent Choobi activity. |
 | `choobi show <id>` | Show one activity record and its exact patch. |
 | `choobi style` | Print the resolved documentation style guide. |
 | `choobi pr create` | Create a pull request with `gh` and annotate it when Choobi updated docs. |
 | `choobi help [COMMAND]` | Show the full command reference or help for one command. |
+
+### Declaring where your documentation lives
+
+Choobi reads every in-scope document in one call, so on a large repository you tell it where the
+documentation actually is. That declaration is committed to the repository, not stored locally,
+because it is a fact about the repository: it gets reviewed in a pull request, it reaches teammates
+and fresh clones, and it moves in the same commit that moves the docs.
+
+```yaml
+# .choobi/scope.yaml
+review_scope:          # replaces the default of every tracked .md/.mdx
+  - "docs/**/*.md"
+  - "docs/**/*.mdx"
+  - "README.md"
+review_exclude:        # added to the defaults (node_modules, vendor, dist, build, target, .venv)
+  - "docs/**/generated/**"
+```
+
+Both keys are optional; omit the file entirely on a small repository. Run `choobi docs` to see the
+resolved boundary and how much of the context budget it uses. This only affects what Choobi
+**reads** — where it may write is fixed baseline policy and nothing here can widen it.
 
 ### Manual update examples
 

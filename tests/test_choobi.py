@@ -11,15 +11,22 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import List
 from unittest import mock
 
 from choobi import baseline, config, docs, engine, evaluate, gitio, history, repos, status, views
 from choobi.engine import UpdateRequest, run_update, _parse_disposition
 from choobi.errors import (
-    AmbiguousTarget, Conflict, RuntimeOutputInvalid, SourceCommitRequired,
-    TargetNotFound, VerificationFailed,
+    AmbiguousTarget, Conflict, ContextTooLarge, InvalidScopeFile, RuntimeOutputInvalid,
+    SourceCommitRequired, TargetNotFound, VerificationFailed,
 )
 from choobi.runtime import FakeRuntime
+
+
+def _full_scope() -> docs.ReviewScope:
+    """The baseline review boundary, for tests that are not exercising scope narrowing."""
+    pol = baseline.policy()
+    return docs.ReviewScope(include=pol["review_scope"], exclude=pol["review_exclude"])
 
 
 def _git(root: Path, *args: str) -> None:
@@ -93,11 +100,86 @@ class ChoobiTest(unittest.TestCase):
         )
         _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "add docs")
         inventory = {record.path: record for record in
-                     docs.tracked_documents(self.root, baseline.policy())}
+                     docs.tracked_documents(self.root, baseline.policy(),
+                                            _full_scope())}
         self.assertFalse(inventory["CONTRIBUTING.md"].writable)
         self.assertIn("read-only owner body", inventory["CONTRIBUTING.md"].content)
         self.assertTrue(inventory["docs/generated.mdx"].writable)
         self.assertTrue(inventory["docs/generated.mdx"].generated)
+
+    def test_review_scope_is_a_read_boundary_distinct_from_the_write_allowlist(self) -> None:
+        """Excluding a doc from review must not depend on whether choobi could write it.
+
+        The two boundaries answer different questions, so a vendored dump inside docs/ (which
+        IS writable) has to be excludable, and a read-only owner outside it must stay in scope.
+        """
+        pol = baseline.policy()
+        scope = docs.ReviewScope(
+            include=pol["review_scope"], exclude=[*pol["review_exclude"], "docs/vendor/**"]
+        )
+        self.assertTrue(scope.covers("CONTRIBUTING.md"))       # read-only, still an owner
+        self.assertFalse(docs.is_allowed("CONTRIBUTING.md", pol))
+        self.assertTrue(docs.is_allowed("docs/vendor/dump.md", pol))  # writable...
+        self.assertFalse(scope.covers("docs/vendor/dump.md"))         # ...but never reviewed
+        self.assertFalse(scope.covers("node_modules/pkg/README.md"))
+        self.assertFalse(scope.covers("src/api.py"))
+        self.assertFalse(scope.covers("../escape.md"))
+
+    def _write_scope_file(self, body: str) -> None:
+        p = repos.scope_file_path(self.root)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+
+    def test_repo_scope_file_replaces_include_and_appends_exclude(self) -> None:
+        """Narrowing has to be predictable: replace the include list, add to the excludes."""
+        self._write_scope_file(
+            'review_scope:\n  - "docs/**/*.md"\nreview_exclude:\n  - "docs/legacy/**"\n'
+        )
+        scope = repos.review_scope(self.root, baseline.policy())
+        self.assertEqual(scope.include, ["docs/**/*.md"])
+        self.assertTrue(scope.covers("docs/api.md"))
+        self.assertFalse(scope.covers("README.md"))            # replaced, not merged
+        self.assertFalse(scope.covers("docs/legacy/old.md"))   # appended to baseline excludes
+        self.assertFalse(scope.covers("node_modules/x/README.md"))  # baseline exclude survives
+
+    def test_missing_scope_file_uses_baseline_defaults(self) -> None:
+        """A repository that has declared nothing gets the broad default, not an empty scope."""
+        scope = repos.review_scope(self.root, baseline.policy())
+        self.assertEqual(scope.include, baseline.policy()["review_scope"])
+        self.assertTrue(scope.covers("README.md"))
+        self.assertTrue(scope.covers("docs/api.md"))
+
+    def test_scope_file_is_read_as_data_and_cannot_escape_the_repo(self) -> None:
+        """The file is untrusted repo content, so bad globs are a typed error, not a surprise."""
+        for bad in ('review_scope:\n  - "../../etc/**"\n',
+                    'review_scope:\n  - "/etc/**"\n',
+                    "review_scope: docs/**\n",
+                    "- just\n- a\n- list\n"):
+            self._write_scope_file(bad)
+            with self.assertRaises(InvalidScopeFile):
+                repos.review_scope(self.root, baseline.policy())
+
+    def test_scope_file_cannot_widen_the_write_allowlist(self) -> None:
+        """Read scope and write scope stay independent: the allowlist is immutable baseline."""
+        self._write_scope_file('review_scope:\n  - "**/*.md"\n  - "src/**/*.py"\n')
+        scope = repos.review_scope(self.root, baseline.policy())
+        self.assertTrue(scope.covers("src/api.py"))
+        self.assertFalse(docs.is_allowed("src/api.py", baseline.policy()))
+
+    def test_scope_narrowing_removes_documents_from_the_reviewed_corpus(self) -> None:
+        (self.root / "docs" / "vendor").mkdir()
+        (self.root / "docs" / "vendor" / "dump.md").write_text("# Dump\n\n" + "x" * 500)
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "vendored dump")
+        pol = baseline.policy()
+        narrowed = docs.ReviewScope(
+            include=pol["review_scope"], exclude=[*pol["review_exclude"], "docs/vendor/**"]
+        )
+        paths = {r.path for r in docs.tracked_documents(self.root, pol, narrowed)}
+        self.assertIn("docs/api.md", paths)
+        self.assertNotIn("docs/vendor/dump.md", paths)
+        inside, outside = docs.scope_census(self.root, narrowed)
+        self.assertIn("docs/vendor/dump.md", dict(outside))
+        self.assertIn("docs/api.md", dict(inside))
 
     def test_unlinked_change_gate_has_skip_semantic_and_priority_tiers(self) -> None:
         self.assertEqual(engine._linkage_tier(["tests/test_api.py"], "+ assert True")[0], "skip")
@@ -241,36 +323,56 @@ class ChoobiTest(unittest.TestCase):
         self.assertIn("scope: cross_cutting", prompts[1])
         self.assertIn("five days", (self.root / "README.md").read_text())
 
-    def test_full_document_linkage_batches_then_arbitrates_shortlist(self) -> None:
-        records = [
+    def _linkage_corpus(self) -> List[docs.TrackedDocument]:
+        return [
             docs.TrackedDocument(f"docs/{name}.md", f"# {name}\n\n" + name * 1200,
                                  True, False)
             for name in "abcd"
         ]
+
+    def test_ownership_review_is_one_call_over_the_whole_corpus(self) -> None:
+        """Every in-scope document competes in a single call.
+
+        This is the property batching could not offer: no document is eliminated by a
+        shortlist that never saw the documents it was competing against.
+        """
         prompts = []
 
         def answer(prompt: str) -> str:
             prompts.append(prompt)
-            if "## Batch response" in prompt:
-                candidates = ["docs/a.md"] if '"path":"docs/a.md"' in prompt else []
-                return json.dumps({"area": "backend", "scope": "area",
-                                   "candidates": candidates, "create": False})
-            return json.dumps({"action": "doc", "doc": "docs/a.md", "area": "backend",
+            return json.dumps({"action": "doc", "doc": "docs/c.md", "area": "backend",
                                "scope": "area"})
 
-        with mock.patch.object(engine, "MAX_PROMPT_BYTES", 4500):
-            decision = engine._llm_linkage(
-                "+ feature = true", records, baseline.policy(), FakeRuntime(answer),
+        decision = engine._llm_linkage(
+            "+ feature = true", self._linkage_corpus(), baseline.policy(),
+            FakeRuntime(answer), sop_body="SOP", changed_inputs=["src/a.py"],
+        )
+        self.assertEqual(decision.doc, "docs/c.md")
+        self.assertEqual(len(prompts), 1)
+        for name in "abcd":
+            self.assertIn(name * 1200, prompts[0])
+
+    def test_corpus_over_budget_names_the_documents_to_exclude(self) -> None:
+        """Over budget, choobi fails loudly with the remedy rather than degrading.
+
+        The message has to carry the arithmetic and the largest offenders, because the only
+        fix is editing review_scope and the operator needs to know what to put there.
+        """
+        def unreachable(_prompt: str) -> str:
+            raise AssertionError("over-budget corpus reached the runtime")
+
+        # A 2,000-token window derives a ~5,600-byte ceiling, so the corpus is over budget by
+        # the same arithmetic production uses rather than by a patched constant.
+        with self.assertRaises(ContextTooLarge) as caught:
+            engine._llm_linkage(
+                "+ feature = true", self._linkage_corpus(), baseline.policy(),
+                FakeRuntime(unreachable, context_window_tokens=2_000),
                 sop_body="SOP", changed_inputs=["src/a.py"],
             )
-        self.assertEqual(decision.doc, "docs/a.md")
-        self.assertGreaterEqual(len(prompts), 3)  # bounded batches, then final arbitration
-        self.assertTrue(all("## Batch response" in prompt for prompt in prompts[:-1]))
-        self.assertTrue(any("b" * 1200 in prompt for prompt in prompts))
-        self.assertTrue(any("d" * 1200 in prompt for prompt in prompts))
-        self.assertIn("Prior batch classifications", prompts[-1])
-        self.assertIn("a" * 1200, prompts[-1])
-        self.assertNotIn("c" * 1200, prompts[-1])
+        message = str(caught.exception)
+        self.assertIn("review_scope", message)
+        self.assertIn("4 documents", message)
+        self.assertIn("docs/a.md", message)
 
     def test_read_only_true_owner_surfaces_documentation_gap(self) -> None:
         (self.root / "CONTRIBUTING.md").write_text("# Contributor workflow\n\nRun workers.\n")
@@ -488,9 +590,11 @@ class ChoobiTest(unittest.TestCase):
     def test_views_docs_and_changelog(self) -> None:
         r = self._run(UpdateRequest(source_commit=self.head, rev_range=f"{self.head}^..{self.head}",
                                     trigger="post_commit"), UPDATE_RESP)
-        docs_out = views.render_docs(self.root)
+        docs_out = views.render_docs(self.root, _full_scope(), FakeRuntime(""))
         self.assertIn("docs/api.md", docs_out)
         self.assertIn("covers: src/api.py", docs_out)
+        self.assertIn("review scope", docs_out)
+        self.assertIn("write scope", docs_out)
         repo_id = config.checkout_id(gitio.common_dir(self.root))
         cl = views.render_changelog(history.recent(repo_id, 30), "(this repo)")
         self.assertIn("documented the configurable retry backoff", cl)

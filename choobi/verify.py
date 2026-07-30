@@ -17,7 +17,7 @@ _SKIP_LINK = ("http://", "https://", "mailto:", "#")
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.*\S)\s*$")
 
 
-def _headings(text: str) -> "list[str]":
+def headings(text: str) -> "list[str]":
     """ATX headings, skipping fenced code blocks so a `# comment` in code isn't counted."""
     out, in_fence = [], False
     for line in text.splitlines():
@@ -111,8 +111,8 @@ def check_write(
             raise Conflict(f"{target} changed since choobi read it")
         # Surgical guard: an update may rename or remove at most ONE section (e.g. a signature
         # in a heading changed). Dropping several signals a wholesale rewrite (build-plan §5.5).
-        old_headings = _headings(old_content)
-        new_headings = set(_headings(content))
+        old_headings = headings(old_content)
+        new_headings = set(headings(content))
         dropped = [h for h in old_headings if h not in new_headings]
         if len(dropped) > 1:
             raise VerificationFailed(f"{target}: update would drop {len(dropped)} sections: "

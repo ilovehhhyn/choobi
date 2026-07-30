@@ -15,6 +15,27 @@ allowlist:
   - "*-plan.md"
   - "docs/**/*-plan.md"
 
+# The documentation surface choobi *reads* for ownership review. This is a different question
+# from `allowlist`, which is what choobi may *write*: a read-only doc can still be the true
+# owner of a change, so review scope must be a superset of the writable set. Every in-scope
+# document is sent complete in one call, so scope is also the context budget — a repository
+# whose corpus does not fit narrows `review_scope` in its SOP rather than having choobi
+# silently review a subset. `choobi docs` prints the resolved picture.
+review_scope:
+  - "**/*.md"
+  - "**/*.mdx"
+
+# Carved out of review_scope. These paths hold vendored or generated reference dumps that are
+# never the owner of a change; sending them costs context and dilutes owner selection.
+review_exclude:
+  - "**/node_modules/**"
+  - "**/vendor/**"
+  - "**/dist/**"
+  - "**/build/**"
+  - "**/target/**"
+  - "**/.venv/**"
+  - "**/site-packages/**"
+
 # Secret-shaped content is rejected from any written output (build-plan §5.6).
 secret_patterns:
   - "sk-ant-[A-Za-z0-9_-]{16,}"

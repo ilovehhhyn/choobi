@@ -384,23 +384,35 @@ Markdown/MDX document in full. The model:
   architecture decision, so the editing review can request owner judgment instead of rewriting the
   intent.
 
-Read scope and write scope are deliberately different. Every tracked Markdown/MDX file is readable
-evidence, including arbitrary root docs and generated references. Only documents matched by the
-immutable allowlist are writable. If the true owner selected by the model is read-only or generated,
-Choobi gives it a flag-or-silent review because those outcomes cannot write. An attempted update or
-create becomes `documentation_gap`; Choobi never substitutes a weaker writable document.
+Read scope and write scope are deliberately different, and each is declared separately in
+`policy.yaml`.
 
-**Bounded complete-document batching.** If the diff, SOP, changed inputs, and all complete documents
-fit under the prompt ceiling, Choobi makes one ownership call. Otherwise it:
+`review_scope` is the read boundary: it defaults to every tracked Markdown/MDX file — including
+arbitrary root docs and generated references — minus vendored and generated trees. A repository
+declares where its documentation actually lives in a committed `.choobi/scope.yaml`, whose
+`review_scope` replaces the default and whose `review_exclude` appends further carve-outs. That file
+is versioned with the repository, not stored in the local SOP, because the boundary is a repository
+fact rather than an operator preference — reviewable in a diff, shared with teammates, present on a
+fresh clone. It is read strictly as data and can only narrow reads; the writable allowlist stays
+immutable baseline policy, so nothing declared there can widen where Choobi writes. `choobi docs` renders the resolved
+boundary alongside its share of the prompt ceiling. Narrowing scope is the one deliberate recall
+sacrifice in the design, so it is a recorded repository decision rather than something Choobi infers
+per run.
 
-1. splits complete documents into bounded batches without truncating or splitting any document;
-2. asks each batch for up to three possible owners plus its area and scope classification;
-3. sends every shortlisted document in full, with the batch classifications, to one final selection
-   call; and
-4. sends the chosen writable document in full to the editing call.
+The `allowlist` is the write boundary and a strict subset of the read boundary. If the true owner
+selected by the model is read-only or generated, Choobi gives it a flag-or-silent review because
+those outcomes cannot write. An attempted update or create becomes `documentation_gap`; Choobi never
+substitutes a weaker writable document.
 
-If a single complete document cannot fit in a batch, or all shortlisted documents cannot fit in the
-final selection together, Choobi fails with `context_too_large` rather than discard evidence.
+**One ownership call.** The diff, SOP, changed inputs, and every in-scope document go to the model
+together in a single call, and the chosen writable document is then sent in full to the editing
+call. Choobi never truncates a document, never splits one across calls, and never reviews a subset.
+
+If the corpus does not fit the prompt ceiling, Choobi fails with `context_too_large`, reporting the
+arithmetic and the largest documents in scope so the operator can narrow `review_scope`. Reviewing a
+shortlist instead is rejected on purpose: it is a second selection algorithm chosen by a byte count
+the operator cannot see, and it can eliminate the true owner before anything compares it against its
+real competition.
 
 **Recall backbone.** Full ownership review is supplemented by two persistent mechanisms:
 
@@ -517,15 +529,26 @@ tree, and executing existing commands or examples through a repository-declared 
 Every nontrivial commit intentionally pays for a full-context ownership judgment. Recall and correct
 ownership take priority over minimizing linkage tokens.
 
-**As built**, Choobi makes one ownership call when all evidence fits. Larger repositories use one
-call per intact-document batch plus a final full-document shortlist selection; an edit adds one more
-call. Choobi fails instead of truncating a diff, SOP, changed file, document, or editing target.
-Per-repository locking prevents concurrent writers. The fixture evaluation reports decision
-accuracy, write precision, recall, silence, required-fact recall, preservation, changed-line
-ceilings, and a finite set of forbidden-claim probes.
+**As built**, Choobi makes exactly one ownership call regardless of repository size; an edit adds one
+more, and `choobi merge` is one call of its own. The call count does not grow with the corpus —
+scope does, which is why scope is declared rather than inferred. Choobi fails instead of truncating a
+diff, SOP, changed file, document, or editing target. Per-repository locking prevents concurrent
+writers. The fixture evaluation reports decision accuracy, write precision, recall, silence,
+required-fact recall, preservation, changed-line ceilings, and a finite set of forbidden-claim
+probes.
 
-The complete prompt has a 100,000-byte UTF-8 ceiling. Choobi fails with `context_too_large` rather
-than truncating evidence the model would need for a correct disposition or full-file output.
+The prompt ceiling is a property of the runtime, not of the engine. Each adapter declares the model
+it pins and that model's context window; the ceiling is `window × 0.8 × 3.5 bytes/token`, the
+remaining fifth reserved for the system contract, the output schema, thinking, and the reply. The
+Claude adapter pins `claude-opus-5` at a 1M-token window, so its ceiling is 2,800,000 bytes; the
+Codex adapter declares a conservative 200,000-token floor because `--ignore-user-config` means
+Choobi cannot verify which model it will get.
+
+Deriving the number rather than declaring it is what makes the pin honest: a byte ceiling is a claim
+about a context window, so an adapter inheriting the operator's CLI default would be asserting that
+claim about a window nobody knows, and the model and the ceiling could drift apart silently. Choobi
+fails with `context_too_large` rather than truncating evidence the model would need for a correct
+disposition or full-file output.
 
 There is no global scheduler, durable queue, result cache, cancellation, call budget, daily budget,
 or token accounting yet. These remain release work; the product must not claim those metrics until
