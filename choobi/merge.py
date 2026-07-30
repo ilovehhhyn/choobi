@@ -222,7 +222,7 @@ def run_merge(root: Path, runtime: Runtime) -> MergeResult:
     head = gitio.resolve(root, "HEAD")
     policy = baseline.policy()
     sop_body = repos.sop_prompt_body(repo_id, repo_path)
-    scope = repos.review_scope(repo_id, repo_path, policy)
+    scope = repos.review_scope(root, policy)
 
     records = {r.path: r for r in docs.tracked_documents(root, policy, scope)}
     if len(records) < 2:

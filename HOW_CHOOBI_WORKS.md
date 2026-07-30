@@ -124,8 +124,10 @@ Read scope and write scope are separate boundaries, because they answer differen
 `review_scope` in `policy.yaml` is what Choobi *reads* to choose an owner. It defaults to every
 tracked Markdown and MDX file, minus vendored and generated trees (`node_modules`, `vendor`,
 `dist`, `build`, `target`, `.venv`, `site-packages`). A repository declares where its documentation
-actually lives by setting `review_scope` in its SOP, which replaces that default; `review_exclude`
-adds further carve-outs. Since every in-scope document is sent complete in one call, review scope
+actually lives in a committed `.choobi/scope.yaml`, whose `review_scope` replaces that default;
+`review_exclude` adds further carve-outs. It lives in the repository rather than in the local SOP
+because it is a fact about the repository, not an operator preference: it belongs in a pull request,
+travels to teammates and fresh clones, and moves in the same commit that moves the documentation. Since every in-scope document is sent complete in one call, review scope
 is also the context budget. `choobi docs` prints the resolved picture: what is in scope, what is
 not, and what share of the budget it consumes.
 

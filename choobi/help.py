@@ -54,7 +54,8 @@ COMMANDS: List[Command] = [
      "detail": "Prints three things: the review scope choobi reads to choose an owner (with "
                "its share of the context budget), the documents outside that scope, and the "
                "writable documents plus the code each declares via its covers: front matter. "
-               "Narrow review scope with review_scope in the repo SOP (choobi style)."},
+               "Narrow review scope with review_scope in the repo's committed "
+               ".choobi/scope.yaml."},
     {"command": "choobi changelog [-n N] [--all] [--status S]",
      "summary": "browse choobi's activity log",
      "detail": "Newest-first list of runs for this repo. -n limits count, --all spans every "

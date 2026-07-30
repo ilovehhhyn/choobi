@@ -599,7 +599,7 @@ def check_review_budget(
 ) -> None:
     """Fail with the corpus arithmetic and the largest offenders, not just a byte count.
 
-    The remedy is always the same — narrow `review_scope` in the repository SOP — so the
+    The remedy is always the same — narrow `review_scope` in the repository's scope file — so the
     error names the documents worth excluding rather than leaving the operator to go find
     them. There is no fallback path: choobi reviews the declared corpus or nothing.
     """
@@ -615,7 +615,7 @@ def check_review_budget(
         f"ownership review needs {size:,} bytes but the {runtime.model} ceiling is "
         f"{runtime.prompt_budget_bytes:,} "
         f"({len(records)} documents totalling {corpus:,} bytes, plus the diff and changed "
-        f"inputs). Narrow review_scope in this repository's SOP (`choobi style`) or add "
+        f"inputs). Narrow review_scope in this repository's .choobi/scope.yaml, or add "
         f"review_exclude entries; `choobi docs` shows the resolved scope. Largest documents "
         f"in scope:\n{listing}"
     )
@@ -723,7 +723,7 @@ def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runt
                 if candidate.exists() or candidate.is_symlink():
                     changed_contents[path] = docs.read_snapshot(root, path)[0]
             all_documents = docs.tracked_documents(
-                root, policy, repos.review_scope(repo_id, repo_path, policy)
+                root, policy, repos.review_scope(root, policy)
             )
             decision = _llm_linkage(
                 diff_text, all_documents, policy, runtime, sop_body=sop_body,

@@ -76,6 +76,10 @@ class InvalidSop(ChoobiError):
     reason = "invalid_sop"
 
 
+class InvalidScopeFile(ChoobiError):
+    reason = "invalid_scope_file"
+
+
 class InvalidRepository(ChoobiError):
     reason = "invalid_repository"
 

@@ -389,8 +389,12 @@ Read scope and write scope are deliberately different, and each is declared sepa
 
 `review_scope` is the read boundary: it defaults to every tracked Markdown/MDX file — including
 arbitrary root docs and generated references — minus vendored and generated trees. A repository
-declares where its documentation actually lives by setting `review_scope` in its SOP, which replaces
-the default; `review_exclude` appends further carve-outs. `choobi docs` renders the resolved
+declares where its documentation actually lives in a committed `.choobi/scope.yaml`, whose
+`review_scope` replaces the default and whose `review_exclude` appends further carve-outs. That file
+is versioned with the repository, not stored in the local SOP, because the boundary is a repository
+fact rather than an operator preference — reviewable in a diff, shared with teammates, present on a
+fresh clone. It is read strictly as data and can only narrow reads; the writable allowlist stays
+immutable baseline policy, so nothing declared there can widen where Choobi writes. `choobi docs` renders the resolved
 boundary alongside its share of the prompt ceiling. Narrowing scope is the one deliberate recall
 sacrifice in the design, so it is a recorded repository decision rather than something Choobi infers
 per run.

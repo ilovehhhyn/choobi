@@ -206,10 +206,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         if args.cmd == "docs":
             root = gitio.repo_root(Path.cwd())
-            policy = baseline.policy()
-            repo_id, repo_path = engine.repo_identity(root)
             print(views.render_docs(
-                root, repos.review_scope(repo_id, repo_path, policy),
+                root, repos.review_scope(root, baseline.policy()),
                 get_runtime(config.Config.load()),
             ))
             return 0

@@ -17,8 +17,8 @@ from unittest import mock
 from choobi import baseline, config, docs, engine, evaluate, gitio, history, repos, status, views
 from choobi.engine import UpdateRequest, run_update, _parse_disposition
 from choobi.errors import (
-    AmbiguousTarget, Conflict, ContextTooLarge, RuntimeOutputInvalid, SourceCommitRequired,
-    TargetNotFound, VerificationFailed,
+    AmbiguousTarget, Conflict, ContextTooLarge, InvalidScopeFile, RuntimeOutputInvalid,
+    SourceCommitRequired, TargetNotFound, VerificationFailed,
 )
 from choobi.runtime import FakeRuntime
 
@@ -125,19 +125,46 @@ class ChoobiTest(unittest.TestCase):
         self.assertFalse(scope.covers("src/api.py"))
         self.assertFalse(scope.covers("../escape.md"))
 
-    def test_sop_review_scope_replaces_include_and_appends_exclude(self) -> None:
-        """SOP narrowing has to be predictable: replace the include list, add to excludes."""
-        repo_id = config.checkout_id(gitio.common_dir(self.root))
-        repos.save_sop(repo_id, (
-            "---\nreview_scope:\n  - \"docs/**/*.md\"\n"
-            "review_exclude:\n  - \"docs/legacy/**\"\n---\nprose\n"
-        ))
-        scope = repos.review_scope(repo_id, str(self.root), baseline.policy())
+    def _write_scope_file(self, body: str) -> None:
+        p = repos.scope_file_path(self.root)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+
+    def test_repo_scope_file_replaces_include_and_appends_exclude(self) -> None:
+        """Narrowing has to be predictable: replace the include list, add to the excludes."""
+        self._write_scope_file(
+            'review_scope:\n  - "docs/**/*.md"\nreview_exclude:\n  - "docs/legacy/**"\n'
+        )
+        scope = repos.review_scope(self.root, baseline.policy())
         self.assertEqual(scope.include, ["docs/**/*.md"])
         self.assertTrue(scope.covers("docs/api.md"))
         self.assertFalse(scope.covers("README.md"))            # replaced, not merged
         self.assertFalse(scope.covers("docs/legacy/old.md"))   # appended to baseline excludes
         self.assertFalse(scope.covers("node_modules/x/README.md"))  # baseline exclude survives
+
+    def test_missing_scope_file_uses_baseline_defaults(self) -> None:
+        """A repository that has declared nothing gets the broad default, not an empty scope."""
+        scope = repos.review_scope(self.root, baseline.policy())
+        self.assertEqual(scope.include, baseline.policy()["review_scope"])
+        self.assertTrue(scope.covers("README.md"))
+        self.assertTrue(scope.covers("docs/api.md"))
+
+    def test_scope_file_is_read_as_data_and_cannot_escape_the_repo(self) -> None:
+        """The file is untrusted repo content, so bad globs are a typed error, not a surprise."""
+        for bad in ('review_scope:\n  - "../../etc/**"\n',
+                    'review_scope:\n  - "/etc/**"\n',
+                    "review_scope: docs/**\n",
+                    "- just\n- a\n- list\n"):
+            self._write_scope_file(bad)
+            with self.assertRaises(InvalidScopeFile):
+                repos.review_scope(self.root, baseline.policy())
+
+    def test_scope_file_cannot_widen_the_write_allowlist(self) -> None:
+        """Read scope and write scope stay independent: the allowlist is immutable baseline."""
+        self._write_scope_file('review_scope:\n  - "**/*.md"\n  - "src/**/*.py"\n')
+        scope = repos.review_scope(self.root, baseline.policy())
+        self.assertTrue(scope.covers("src/api.py"))
+        self.assertFalse(docs.is_allowed("src/api.py", baseline.policy()))
 
     def test_scope_narrowing_removes_documents_from_the_reviewed_corpus(self) -> None:
         (self.root / "docs" / "vendor").mkdir()
