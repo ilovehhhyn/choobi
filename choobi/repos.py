@@ -39,6 +39,16 @@ _CATEGORIES: List[Tuple[str, Any]] = [
 ]
 
 
+# Where new documents may be created when a repository enables creation (the default) but does
+# not narrow the destinations itself. Choobi documents shipped behaviour, so plan directories are
+# deliberately excluded — those are forward-looking and choobi never authors them.
+DEFAULT_CREATE_ROOTS: List[str] = [
+    "docs/public/features",
+    "docs/public/reference",
+    "docs/internal/features",
+]
+
+
 def _category(path: str) -> str:
     for label, match in _CATEGORIES:
         if match(path):
@@ -85,12 +95,14 @@ def save_snapshot(repo_id: str, code_files: List[str], head: str) -> None:
 
 _SOP_TEMPLATE = """\
 ---
-# Set this to true only after choosing this repository's document locations and owners.
-allow_create: false
+# Choobi may create a new document when a change ships a genuinely new feature that no existing
+# document owns. Every proposed new document is vetted by a separate model review before it is
+# written. Set allow_create to false to turn creation off, or narrow create_roots to the exact
+# directories new documents may live in.
+allow_create: true
 create_roots:
   - docs/public/features/
   - docs/public/reference/
-  - docs/internal/plans/
   - docs/internal/features/
 ---
 # choobi SOP: {repo}
@@ -108,7 +120,9 @@ When a change introduces a new feature choobi identifies, or a big shift, choobi
    - internal: plans, such as build and implementation plans
    - internal: feature explanations for humans (how and why something works)
 2. If a relevant doc exists, it updates that doc.
-3. If none exists, it reports a documentation gap unless `allow_create` is explicitly enabled.
+3. If none exists, it proposes a new document (creation is enabled by default). A separate model
+   review vets that proposal, and choobi only writes it when the review approves. Set
+   `allow_create: false` to turn creation off; a needed-but-disabled document is reported as a gap.
 
 ## Repository areas and cross-cutting features
 
@@ -218,15 +232,23 @@ def _split_front_matter(text: str) -> Tuple[Dict[str, Any], str]:
 
 
 def _create_roots(front_matter: Dict[str, Any]) -> List[str]:
-    """Return canonical create roots, requiring them when creation is enabled."""
-    allow_create = front_matter.get("allow_create", False)
+    """Return canonical create roots for this SOP.
+
+    Creation is enabled by default: a repository that never mentions `allow_create` still lets
+    choobi propose new documents under DEFAULT_CREATE_ROOTS. A repository turns creation off with
+    `allow_create: false`, or narrows the destinations with its own non-empty `create_roots` list.
+    Every proposed new document is still vetted by a dedicated model review before it is written.
+    """
+    allow_create = front_matter.get("allow_create", True)
     if not isinstance(allow_create, bool):
         raise InvalidSop("allow_create must be true or false")
-    raw = front_matter.get("create_roots", [])
     if not allow_create:
         return []
+    raw = front_matter.get("create_roots")
+    if raw is None:
+        raw = list(DEFAULT_CREATE_ROOTS)
     if not isinstance(raw, list) or not raw:
-        raise InvalidSop("allow_create requires a non-empty create_roots list")
+        raise InvalidSop("create_roots must be a non-empty list of paths when set")
     roots: List[str] = []
     for value in raw:
         if not isinstance(value, str):

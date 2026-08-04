@@ -340,6 +340,7 @@ class HardeningTest(unittest.TestCase):
                 json.dumps({"action": "create", "doc": "", "area": "public API",
                             "scope": "area"}),
                 response,
+                json.dumps({"approve": True, "reason": "documents a new public API"}),
             ]),
         )
         self.assertEqual(result.status, "committed")
@@ -728,8 +729,11 @@ class HardeningTest(unittest.TestCase):
             hooks.install(self.root)
         self.assertIn("keep-me", hook.read_text())
 
-    def test_creation_is_opt_in(self) -> None:
+    def test_creation_is_on_by_default_and_can_be_disabled(self) -> None:
         repo_id = config.checkout_id(gitio.common_dir(self.root))
+        # Creation is enabled by default; a repository opts out with allow_create: false.
+        self.assertTrue(repos.sop_allows_create(repo_id, str(self.root)))
+        repos.save_sop(repo_id, "---\nallow_create: false\n---\nNo new docs here.\n")
         self.assertFalse(repos.sop_allows_create(repo_id, str(self.root)))
         default = repos.default_sop(str(self.root))
         self.assertIn("data retention periods", default)
@@ -761,6 +765,8 @@ class HardeningTest(unittest.TestCase):
             )
 
     def test_denied_creation_is_a_gap_not_silence(self) -> None:
+        repo_id = config.checkout_id(gitio.common_dir(self.root))
+        repos.save_sop(repo_id, "---\nallow_create: false\n---\nNo new docs here.\n")
         (self.root / "src/new_api.py").write_text('"""Public API."""\n')
         _git(self.root, "add", "-A")
         _git(self.root, "commit", "-qm", "add public api")
@@ -825,6 +831,9 @@ class HardeningTest(unittest.TestCase):
         })
 
         def answer(prompt: str) -> str:
+            # The dedicated new-document review sees only the draft and diff, not the full surface.
+            if "proposes CREATING a brand-new" in prompt:
+                return json.dumps({"approve": True, "reason": "new public API with no owner"})
             self.assertIn("ALPHA_SENTINEL", prompt)
             self.assertIn("BETA_SENTINEL", prompt)
             if "## Final response" in prompt:

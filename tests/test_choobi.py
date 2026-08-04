@@ -516,14 +516,25 @@ class ChoobiTest(unittest.TestCase):
         repo_id = config.checkout_id(gitio.common_dir(self.root))
         content, is_default = repos.read_sop(repo_id, str(self.root))
         self.assertTrue(is_default)
-        self.assertFalse(repos.sop_allows_create(repo_id, str(self.root)))
+        # Creation is enabled by default; a repo turns it off by setting allow_create: false.
+        self.assertTrue(repos.sop_allows_create(repo_id, str(self.root)))
         repos.save_sop(repo_id, "---\nallow_create: false\n---\nNo new docs here.\n")
         _, is_default2 = repos.read_sop(repo_id, str(self.root))
         self.assertFalse(is_default2)
         self.assertFalse(repos.sop_allows_create(repo_id, str(self.root)))
         self.assertIn("No new docs", repos.sop_prompt_body(repo_id, str(self.root)))
         repos.reset_sop(repo_id)
-        self.assertFalse(repos.sop_allows_create(repo_id, str(self.root)))
+        self.assertTrue(repos.sop_allows_create(repo_id, str(self.root)))
+
+    def test_sop_create_roots_default_when_enabled_without_roots(self) -> None:
+        # allow_create with no create_roots falls back to the built-in default roots.
+        repo_id = config.checkout_id(gitio.common_dir(self.root))
+        repos.save_sop(repo_id, "---\nallow_create: true\n---\nCreate freely.\n")
+        self.assertTrue(repos.sop_allows_create(repo_id, str(self.root)))
+        self.assertTrue(repos.sop_allows_create_path(
+            repo_id, str(self.root), "docs/public/features/new.md"))
+        self.assertFalse(repos.sop_allows_create_path(
+            repo_id, str(self.root), "somewhere/else.md"))
 
     def test_sop_enables_create(self) -> None:
         repo_id = config.checkout_id(gitio.common_dir(self.root))
@@ -534,9 +545,38 @@ class ChoobiTest(unittest.TestCase):
         crt = json.dumps({"disposition": "create", "target": "docs/new.md",
                           "summary": "new feature doc", "content": "# New feature\n\nDetails.\n",
                           "source_paths": []})
-        r = self._run(UpdateRequest(targets=["docs/new.md"], detached=True, instruction="x"), crt)
+        approve = json.dumps({"approve": True, "reason": "documents a genuinely new feature"})
+        # First call is the create disposition; second is the dedicated new-document review.
+        r = self._run(UpdateRequest(targets=["docs/new.md"], detached=True, instruction="x"),
+                      [crt, approve])
         self.assertEqual(r.status, "committed")
         self.assertTrue((self.root / "docs" / "new.md").exists())
+
+    def test_create_enabled_by_default(self) -> None:
+        # No SOP saved: creation is on, so an approved new document is written.
+        crt = json.dumps({"disposition": "create", "target": "docs/public/features/new.md",
+                          "summary": "new feature doc", "content": "# New feature\n\nDetails.\n",
+                          "source_paths": []})
+        approve = json.dumps({"approve": True, "reason": "stable user-visible feature, no owner"})
+        r = self._run(
+            UpdateRequest(targets=["docs/public/features/new.md"], detached=True, instruction="x"),
+            [crt, approve],
+        )
+        self.assertEqual(r.status, "committed")
+        self.assertTrue((self.root / "docs" / "public" / "features" / "new.md").exists())
+
+    def test_create_declined_by_review_is_no_op(self) -> None:
+        # The dedicated review can veto a proposed new document; nothing is written.
+        crt = json.dumps({"disposition": "create", "target": "docs/public/features/new.md",
+                          "summary": "new feature doc", "content": "# New feature\n\nDetails.\n",
+                          "source_paths": []})
+        reject = json.dumps({"approve": False, "reason": "internal detail, not a public surface"})
+        r = self._run(
+            UpdateRequest(targets=["docs/public/features/new.md"], detached=True, instruction="x"),
+            [crt, reject],
+        )
+        self.assertEqual((r.status, r.reason), ("no_op", "creation_declined"))
+        self.assertFalse((self.root / "docs" / "public" / "features" / "new.md").exists())
 
     def test_knowledge_generation(self) -> None:
         repo_id = config.checkout_id(gitio.common_dir(self.root))

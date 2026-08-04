@@ -90,6 +90,11 @@ def _flag(path: str, summary: str) -> str:
                        "content": "", "source_paths": []})
 
 
+def _approve(reason: str = "stable user-visible surface with no existing owner") -> str:
+    import json
+    return json.dumps({"approve": True, "reason": reason})
+
+
 def _link(path: str) -> str:
     import json
     return json.dumps({"action": "doc", "doc": path, "area": "feature",
@@ -348,7 +353,8 @@ FIXTURES: List[Fixture] = [
     Fixture("silent_test_only", _f_silent_test, "silent", _silent()),
     Fixture("create_new_feature", _f_create, "create",
             [_link_create(),
-             _create("docs/internal/features/ratelimit.md", _RATELIMIT_DOC, "src/ratelimit.py")],
+             _create("docs/internal/features/ratelimit.md", _RATELIMIT_DOC, "src/ratelimit.py"),
+             _approve()],
             allow_create=True, required=("allow(", "limit", "window"),
             forbidden=("TooManyRequests", "user_id", "client IP", "`str`",
                        "handle_request", "reject_request", "from ratelimit import")),

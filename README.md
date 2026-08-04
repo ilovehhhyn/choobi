@@ -148,8 +148,13 @@ start an update.
 
 By default, Choobi can update `README.md`, `HOW_CHOOBI_WORKS.md`, Markdown files under `docs/`,
 and `*-plan.md` files. Use the repository SOP in the **instructions** tab to describe what should
-be documented and where. New-document creation is disabled until the SOP explicitly enables it
-and declares the allowed destination directories.
+be documented and where. New-document creation is **enabled by default**: when a change ships a
+genuinely new feature that no existing document owns, Choobi proposes a new page under the SOP's
+`create_roots` (defaulting to `docs/public/features/`, `docs/public/reference/`, and
+`docs/internal/features/`). Every proposed new document must first pass a dedicated model review
+that approves or rejects the creation; a rejected proposal writes nothing. Set `allow_create:
+false` in the SOP to turn creation off entirely (a change that then needs a new document is
+reported as a documentation gap), or narrow `create_roots` to restrict where new pages may live.
 
 Use the **style** tab for preferences that should apply across repositories, such as voice,
 terminology, structure, and verbosity.

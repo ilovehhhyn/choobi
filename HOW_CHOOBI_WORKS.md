@@ -224,8 +224,12 @@ structure, and verbosity, but cannot weaken safety rules or decide repository pl
 ### Repository SOP and knowledge base
 
 The SOP is human-authored guidance that Choobi acts on. It can describe documentation priorities,
-placement, and repository-specific expectations. New-document creation is off by default and
-requires both `allow_create: true` and a non-empty `create_roots` list.
+placement, and repository-specific expectations. New-document creation is on by default: when a
+change ships a new feature that no existing document owns, Choobi drafts a new page under the
+SOP's `create_roots` (a built-in default set when the SOP does not list its own) and a dedicated
+model review then approves or rejects the creation before anything is written. A repository turns
+creation off with `allow_create: false`, or narrows the destinations with its own `create_roots`
+list.
 
 The knowledge base is a deterministic, read-only map of writable documents, their `covers:`
 entries, top-level code areas without documentation coverage, and recent activity. Regenerating it
