@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS records (
     status        TEXT NOT NULL,
     reason        TEXT NOT NULL DEFAULT '',
     in_tokens     INTEGER NOT NULL DEFAULT 0,
-    out_tokens    INTEGER NOT NULL DEFAULT 0
+    out_tokens    INTEGER NOT NULL DEFAULT 0,
+    push          TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS checkpoints (
     repo_id    TEXT PRIMARY KEY,
@@ -53,8 +54,11 @@ CREATE INDEX IF NOT EXISTS idx_records_source ON records(repo_id, source_commit)
 _COLUMNS = [
     "id", "repo_id", "repo_path", "trigger", "source_commit", "head_commit",
     "docs_commit", "ts", "duration_ms", "docs_changed", "summary", "patch",
-    "status", "reason", "in_tokens", "out_tokens",
+    "status", "reason", "in_tokens", "out_tokens", "push",
 ]
+
+# Columns added after the first release; `connect` adds them to an existing database.
+_MIGRATIONS = [("records", "push", "TEXT NOT NULL DEFAULT ''")]
 
 
 def connect() -> sqlite3.Connection:
@@ -62,6 +66,11 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(config.db_path()))
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    for table, column, decl in _MIGRATIONS:
+        present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in present:
+            with conn:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
     return conn
 
 
@@ -85,6 +94,7 @@ def add_record(
     reason: str = "",
     in_tokens: int = 0,
     out_tokens: int = 0,
+    push: str = "",
 ) -> int:
     conn = connect()
     with conn:
@@ -92,11 +102,11 @@ def add_record(
             """INSERT INTO records
                (repo_id, repo_path, trigger, source_commit, head_commit, docs_commit,
                 ts, duration_ms, docs_changed, summary, patch, status, reason,
-                in_tokens, out_tokens)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                in_tokens, out_tokens, push)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (repo_id, repo_path, trigger, source_commit, head_commit, docs_commit,
              _now(), duration_ms, json.dumps(docs_changed or []), summary, patch,
-             status, reason, in_tokens, out_tokens),
+             status, reason, in_tokens, out_tokens, push),
         )
     conn.close()
     register_repo(repo_id, repo_path)
@@ -142,12 +152,23 @@ def find_by_source(repo_id: str, source_commit: str) -> Optional[Dict[str, Any]]
     conn = connect()
     row = conn.execute(
         """SELECT * FROM records
-           WHERE repo_id=? AND source_commit=? AND status IN ('committed','no_op','flagged')
+           WHERE repo_id=? AND source_commit=?
+             AND status IN ('committed','no_op','flagged','parked','coalesced')
            ORDER BY id DESC LIMIT 1""",
         (repo_id, source_commit),
     ).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def docs_commits(repo_id: str) -> "set[str]":
+    """Every docs commit Choobi has recorded for this repo (landed or parked)."""
+    conn = connect()
+    rows = conn.execute(
+        "SELECT docs_commit FROM records WHERE repo_id=? AND docs_commit IS NOT NULL", (repo_id,)
+    ).fetchall()
+    conn.close()
+    return {row[0] for row in rows if row[0]}
 
 
 def recent(repo_id: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:

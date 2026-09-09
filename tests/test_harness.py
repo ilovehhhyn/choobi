@@ -13,8 +13,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from choobi import baseline, commitwriter, docs, gitio, verify
-from choobi.errors import Conflict, NotAllowedPath, Parked, VerificationFailed
+from choobi import apply as apply_mod, baseline, cli, commitwriter, config, docs, gitio, history, pushing, verify
+from choobi.errors import Conflict, NotAllowedPath, Parked, PushRejected, VerificationFailed
 
 
 def _git(root: Path, *args: str) -> str:
@@ -281,6 +281,115 @@ class CommitWriterTest(HarnessCase):
         # Re-attaching the same content is a no-op, never a duplicate commit.
         self.assertEqual(commitwriter.attach_pending(self.root, pending, paths=["docs/api.md"]),
                          landed)
+
+
+def _park(test: HarnessCase) -> str:
+    """Park a docs commit for test.head by switching branches first. Returns the pending sha."""
+    expected = gitio.file_hash(test.root, "docs/api.md")
+    _git(test.root, "checkout", "-q", "-b", "other", "HEAD^")   # other does not contain head
+    with test.assertRaises(Parked) as caught:
+        commitwriter.write_and_commit(
+            test.root, {"docs/api.md": NEW_DOC}, "add configurable retry backoff",
+            source_commit=test.head, expected_hashes={"docs/api.md": expected},
+            source_branch="main",
+        )
+    return caught.exception.pending
+
+
+class PushingTest(HarnessCase):
+    def _docs_commit(self) -> str:
+        (self.root / "docs/api.md").write_text(NEW_DOC)
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "docs")
+        return gitio.resolve(self.root, "HEAD")
+
+    def test_pushes_only_where_the_developer_already_pushed(self) -> None:
+        cfg = config.Config()
+        self.assertEqual(pushing.maybe_push(self.root, cfg, source_commit=self.head,
+                                            docs_commit=self.head), pushing.NO_UPSTREAM)
+        add_remote(self.root, self.remote)
+        _git(self.root, "push", "-q", "-u", "origin", "main")
+        docs_commit = self._docs_commit()
+        self.assertEqual(pushing.maybe_push(self.root, cfg, source_commit=self.head,
+                                            docs_commit=docs_commit), pushing.PUSHED)
+        self.assertEqual(_git(self.remote, "rev-parse", "main"), docs_commit)
+
+    def test_does_not_push_a_branch_the_developer_has_not_pushed(self) -> None:
+        add_remote(self.root, self.remote)
+        _git(self.root, "push", "-q", "-u", "origin", "main")
+        (self.root / "src/api.py").write_text("def retry(n=5): return n\n")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "local only")
+        source = gitio.resolve(self.root, "HEAD")
+        docs_commit = self._docs_commit()
+        self.assertEqual(pushing.maybe_push(self.root, config.Config(), source_commit=source,
+                                            docs_commit=docs_commit), pushing.NOT_PUBLISHED)
+        self.assertEqual(_git(self.remote, "rev-parse", "main"), self.head)
+
+    def test_disabled_and_rejected(self) -> None:
+        add_remote(self.root, self.remote)
+        _git(self.root, "push", "-q", "-u", "origin", "main")
+        docs_commit = self._docs_commit()
+        self.assertEqual(pushing.maybe_push(self.root, config.Config(auto_push=False),
+                                            source_commit=self.head, docs_commit=docs_commit),
+                         pushing.DISABLED)
+        with mock.patch("choobi.pushing.gitio.push_fast_forward",
+                        side_effect=RuntimeError("rejected")):
+            with self.assertRaises(PushRejected):
+                pushing.maybe_push(self.root, config.Config(), source_commit=self.head,
+                                   docs_commit=docs_commit)
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), docs_commit)
+
+
+class ApplyTest(HarnessCase):
+    def test_apply_lands_parked_commit_on_its_branch_and_pushes(self) -> None:
+        add_remote(self.root, self.remote)
+        _git(self.root, "push", "-q", "-u", "origin", "main")
+        pending = _park(self)
+        # Still on `other`, which does not contain the source commit: not landed here.
+        skipped = apply_mod.apply_pending(self.root, config.Config())
+        self.assertEqual([(o.status, o.pending) for o in skipped], [("skipped", pending)])
+        self.assertEqual(gitio.pending_refs(self.root), {self.head: pending})
+
+        _git(self.root, "checkout", "-q", "main")
+        landed = apply_mod.apply_pending(self.root, config.Config())
+        self.assertEqual([o.status for o in landed], ["landed"])
+        self.assertEqual(landed[0].detail, pushing.PUSHED)
+        self.assertEqual((self.root / "docs/api.md").read_text(), NEW_DOC)
+        self.assertEqual(gitio.pending_refs(self.root), {})
+        self.assertEqual(_git(self.remote, "rev-parse", "main"), gitio.resolve(self.root, "HEAD"))
+        repo_id = config.checkout_id(gitio.common_dir(self.root))
+        record = history.recent(repo_id, limit=1)[0]
+        self.assertEqual((record["status"], record["trigger"], record["push"]),
+                         ("committed", "apply", pushing.PUSHED))
+        self.assertEqual(apply_mod.apply_pending(self.root, config.Config()), [])
+
+    def test_apply_keeps_the_ref_when_the_target_is_dirty(self) -> None:
+        pending = _park(self)
+        _git(self.root, "checkout", "-q", "main")
+        (self.root / "docs/api.md").write_text("# editing\n")
+        outcome = apply_mod.apply_pending(self.root, config.Config())[0]
+        self.assertEqual(outcome.status, "skipped")
+        self.assertIn("uncommitted", outcome.detail)
+        self.assertEqual(gitio.pending_refs(self.root), {self.head: pending})
+        self.assertEqual((self.root / "docs/api.md").read_text(), "# editing\n")
+
+    def test_cli_apply_prints_one_line_per_ref(self) -> None:
+        _park(self)
+        _git(self.root, "checkout", "-q", "main")
+        with mock.patch("choobi.cli.gitio.repo_root", return_value=self.root):
+            with mock.patch("builtins.print") as printed:
+                self.assertEqual(cli.main(["apply"]), 0)
+        text = printed.call_args[0][0]
+        self.assertIn("landed", text)
+        self.assertIn(self.head[:7], text)
+
+    def test_history_migration_adds_push_column_to_an_old_database(self) -> None:
+        import sqlite3
+        config.db_path().parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(config.db_path()))
+        conn.executescript(history._SCHEMA.replace(",\n    push          TEXT NOT NULL DEFAULT ''", ""))
+        conn.close()
+        rid = history.add_record("0123456789abcdef", "/x", "manual", "committed", push="pushed")
+        self.assertEqual(history.get(rid)["push"], "pushed")
 
 
 if __name__ == "__main__":

@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import (
-    agent_skill, auth, config, engine, gitio, help as help_mod, history, hooks, locking, pr,
-    status, views,
+    agent_skill, apply as apply_mod, auth, config, engine, gitio, help as help_mod, history,
+    hooks, locking, pr, status, views,
 )
 from .errors import ChoobiError, InvalidScope, PendingDocsUpdate, SourceCommitRequired
 from .runtime import get_runtime
@@ -62,6 +62,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("ui", add_help=False)
     prp = sub.add_parser("pr", add_help=False)
     prp.add_argument("pr_cmd", choices=["create"])
+    sub.add_parser("apply", add_help=False)
     return p
 
 
@@ -133,6 +134,19 @@ def _cmd_update(args: argparse.Namespace, instruction: Optional[str]) -> int:
         print("documentation_gap — a doc is warranted but no writable placement exists.")
     elif result.status == "no_op" and trigger != "post_commit":
         print(status.NOOP)
+    return 0
+
+
+def _cmd_apply() -> int:
+    """Land parked docs commits. Waits for a running background update rather than racing it."""
+    root = gitio.repo_root(Path.cwd())
+    repo_id = config.checkout_id(gitio.common_dir(root))
+    lock = locking.RepoLock(repo_id)
+    lock.acquire(blocking=True)
+    try:
+        print(apply_mod.render(apply_mod.apply_pending(root, config.Config.load())))
+    finally:
+        lock.release()
     return 0
 
 
@@ -225,6 +239,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             root = gitio.repo_root(Path.cwd())
             print(pr.create(root))
             return 0
+        if args.cmd == "apply":
+            return _cmd_apply()
     except ChoobiError as exc:
         print(f"{status.FAILED}   ({exc.reason}): {exc.message}", file=sys.stderr)
         return 1

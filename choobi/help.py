@@ -61,6 +61,12 @@ COMMANDS: List[Command] = [
      "summary": "create a PR via gh and annotate it",
      "detail": "Refuses while a docs update is active, opens the PR with the authenticated gh CLI, and "
                "inserts the line 'choobi updated docs.' when a docs commit exists."},
+    {"command": "choobi apply",
+     "summary": "land parked docs commits onto the current branch",
+     "detail": "A background update parks its verified docs commit on refs/choobi/pending/ "
+               "instead of racing you when you switched branch, were editing the target, or had "
+               "a merge/rebase in progress. apply attaches every parked commit whose source is on "
+               "this branch and pushes under the usual rule (only where you already pushed)."},
     {"command": "choobi help [COMMAND]",
      "summary": "this command reference",
      "detail": "Shows all commands, or details for one."},

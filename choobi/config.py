@@ -56,6 +56,10 @@ class Config:
     # Opt-in: let the runtime read tracked repo files before deciding (agentic read loop,
     # shared identically by every runtime). Off by default keeps the strict one-shot path.
     tools: bool = False
+    # Push Choobi's docs commit to the branch's upstream when the developer already pushed the
+    # source commit (fast-forward only). Off means the docs commit only rides the next push.
+    auto_push: bool = True
+
     @classmethod
     def load(cls) -> "Config":
         p = config_path()
