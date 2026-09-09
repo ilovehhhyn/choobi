@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from choobi import gitio
+from choobi import baseline, docs, gitio
 from choobi.errors import NotAllowedPath
 
 
@@ -127,6 +127,35 @@ class GitPlumbingTest(HarnessCase):
         _git(self.root, "update-ref", f"refs/choobi/pending/{self.head}", self.head)
         _git(self.root, "update-ref", "refs/other/x", self.head)
         self.assertEqual(gitio.pending_refs(self.root), {self.head: self.head})
+
+
+class TreeTest(HarnessCase):
+    def test_pinned_tree_ignores_dirty_working_copy(self) -> None:
+        (self.root / "docs/api.md").write_text("# dirty\n")
+        working = docs.Tree.working(self.root)
+        pinned = docs.Tree.at(self.root, "HEAD")
+        self.assertIn("dirty", working.read("docs/api.md")[0])
+        text, digest = pinned.read("docs/api.md")
+        self.assertIn("Retries once.", text)
+        self.assertEqual(len(digest), 64)
+        self.assertTrue(pinned.exists("docs/api.md"))
+        self.assertTrue(pinned.exists("docs"))
+        self.assertFalse(pinned.exists("docs/nope.md"))
+        self.assertIn("src/api.py", pinned.files())
+
+    def test_pinned_tree_rejects_symlink_blobs(self) -> None:
+        os.symlink("docs/api.md", self.root / "link.md")
+        _git(self.root, "add", "link.md")
+        _git(self.root, "commit", "-qm", "symlink")
+        with self.assertRaises(NotAllowedPath):
+            docs.Tree.at(self.root, "HEAD").read("link.md")
+
+    def test_tracked_documents_can_read_a_pinned_tree(self) -> None:
+        (self.root / "docs/api.md").write_text("# dirty\n")
+        records = {r.path: r for r in docs.tracked_documents(
+            self.root, baseline.policy(), tree=docs.Tree.at(self.root, "HEAD"))}
+        self.assertIn("Retries once.", records["docs/api.md"].content)
+        self.assertTrue(records["docs/api.md"].writable)
 
 
 if __name__ == "__main__":

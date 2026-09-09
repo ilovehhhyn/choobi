@@ -31,6 +31,59 @@ class TrackedDocument:
     generated: bool
 
 
+@dataclass(frozen=True)
+class Tree:
+    """One place to read repository files from: the working tree, or a pinned revision.
+
+    Anchored runs read every piece of evidence from git objects at the revision they were
+    started on, so an in-progress edit in the working tree can never leak into a prompt or a
+    docs commit. Detached runs (`--staged`/`--working`) read the working tree because that IS
+    their evidence. Both paths reject symlinks and non-regular entries.
+    """
+
+    root: Path
+    rev: Optional[str]
+
+    @classmethod
+    def working(cls, root: Path) -> "Tree":
+        return cls(root, None)
+
+    @classmethod
+    def at(cls, root: Path, rev: str) -> "Tree":
+        return cls(root, gitio.resolve(root, rev))
+
+    def files(self) -> List[str]:
+        if self.rev is None:
+            return gitio.tracked_files(self.root)
+        return sorted(gitio.ls_tree(self.root, self.rev))
+
+    def exists(self, rel_path: str) -> bool:
+        """True for a file, or a directory prefix, present in this tree."""
+        rel = rel_path.rstrip("/")
+        if self.rev is None:
+            return (self.root / rel).exists()
+        if rel in ("", "."):
+            return True
+        listing = gitio.ls_tree(self.root, self.rev)
+        return rel in listing or any(path.startswith(rel + "/") for path in listing)
+
+    def read(self, rel_path: str) -> Tuple[str, str]:
+        """(text, sha256) of one regular file in this tree."""
+        if self.rev is None:
+            return read_snapshot(self.root, rel_path)
+        checked_path(self.root, rel_path)
+        mode = gitio.ls_tree(self.root, self.rev).get(rel_path)
+        if mode is None:
+            raise TargetNotFound(f"{rel_path} does not exist at {self.rev[:12]}")
+        if mode not in ("100644", "100755"):
+            raise NotAllowedPath(f"{rel_path} is not a regular repository file at {self.rev[:12]}")
+        try:
+            data = gitio.show_blob(self.root, self.rev, rel_path)
+        except RuntimeError as exc:
+            raise TargetNotFound(f"{rel_path} could not be read at {self.rev[:12]}: {exc}") from exc
+        return data.decode(errors="replace"), hashlib.sha256(data).hexdigest()
+
+
 def checked_path(root: Path, rel_path: str) -> Path:
     """Return a repository-contained path with no symlink in its relative path."""
     candidate = root / rel_path
@@ -145,18 +198,21 @@ def looks_generated(text: str) -> bool:
     return any(marker in lowered for marker in _GENERATED_MARKERS)
 
 
-def tracked_documents(root: Path, policy: Dict[str, Any]) -> List[TrackedDocument]:
-    """Return every tracked Markdown/MDX document with its complete current content.
+def tracked_documents(
+    root: Path, policy: Dict[str, Any], tree: Optional[Tree] = None,
+) -> List[TrackedDocument]:
+    """Return every tracked Markdown/MDX document with its complete content from `tree`.
 
     Read-only and generated documents are intentionally included: either may be the true
     owner of a change, in which case the engine must surface a documentation gap instead of
-    silently choosing a weaker writable substitute.
+    silently choosing a weaker writable substitute. `tree` defaults to the working tree.
     """
+    tree = tree or Tree.working(root)
     records: List[TrackedDocument] = []
-    for path in sorted(gitio.tracked_files(root)):
+    for path in sorted(tree.files()):
         if Path(path).suffix.lower() not in {".md", ".mdx"}:
             continue
-        content, _ = read_snapshot(root, path)
+        content, _ = tree.read(path)
         records.append(TrackedDocument(
             path=path,
             content=content,
