@@ -13,8 +13,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from choobi import apply as apply_mod, baseline, cli, commitwriter, config, docs, gitio, history, pushing, verify
-from choobi.errors import Conflict, NotAllowedPath, Parked, PushRejected, VerificationFailed
+from choobi import apply as apply_mod, baseline, cli, commitwriter, config, docs, engine, gitio, history, pushing, verify
+from choobi.engine import UpdateRequest
+from choobi.errors import Conflict, NotAllowedPath, Parked, PushRejected, RuntimeUnavailable, VerificationFailed
+from choobi.runtime import FakeRuntime
 
 
 def _git(root: Path, *args: str) -> str:
@@ -390,6 +392,247 @@ class ApplyTest(HarnessCase):
         conn.close()
         rid = history.add_record("0123456789abcdef", "/x", "manual", "committed", push="pushed")
         self.assertEqual(history.get(rid)["push"], "pushed")
+
+
+def _link(doc: str = "docs/api.md", findings: str = "") -> str:
+    data = {"action": "doc", "doc": doc, "area": "backend", "scope": "area"}
+    if findings:
+        data["findings"] = findings
+    return json.dumps(data)
+
+
+def _upd(content: str = NEW_DOC, summary: str = "documented the retry default in docs/api.md",
+         target: str = "docs/api.md") -> str:
+    return json.dumps({"disposition": "update", "target": target, "summary": summary,
+                       "content": content, "source_paths": []})
+
+
+def _silent(summary: str = "") -> str:
+    return json.dumps({"disposition": "silent", "target": "", "summary": summary,
+                       "content": "", "source_paths": []})
+
+
+class EngineTest(HarnessCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.cfg = config.Config(name="t", onboarded=True)
+        self.repo_id = config.checkout_id(gitio.common_dir(self.root))
+
+    def _anchored(self, sha: "str | None" = None, trigger: str = "post_commit") -> UpdateRequest:
+        sha = sha or self.head
+        return UpdateRequest(source_commit=sha, rev_range=f"{sha}^..{sha}", trigger=trigger)
+
+    def test_anchored_run_reads_evidence_from_git_objects_not_the_working_tree(self) -> None:
+        (self.root / "src/api.py").write_text("def retry(n=99): return 'UNCOMMITTED_SENTINEL'\n")
+        prompts = []
+
+        def answer(prompt: str) -> str:
+            prompts.append(prompt)
+            return _link() if "## Final response" in prompt else _upd()
+
+        result = engine.run_update(self.root, self._anchored(), self.cfg, FakeRuntime(answer))
+        self.assertEqual(result.status, "committed")
+        self.assertNotIn("UNCOMMITTED_SENTINEL", "\n".join(prompts))
+        self.assertIn("def retry(n=3)", prompts[0])
+        # The user's in-progress source edit is untouched and the docs commit landed cleanly.
+        self.assertIn("UNCOMMITTED_SENTINEL", (self.root / "src/api.py").read_text())
+        self.assertEqual((self.root / "docs/api.md").read_text(), NEW_DOC)
+
+    def test_branch_switch_during_the_run_parks_and_apply_lands_later(self) -> None:
+        def answer(prompt: str) -> str:
+            if "## Final response" in prompt:
+                return _link()
+            _git(self.root, "checkout", "-q", "-b", "other", "HEAD^")   # user wandered off
+            return _upd()
+
+        result = engine.run_update(self.root, self._anchored(), self.cfg, FakeRuntime(answer))
+        self.assertEqual(result.status, "parked")
+        self.assertIn("choobi apply", result.completion_message)
+        record = history.recent(self.repo_id, limit=1)[0]
+        self.assertEqual(record["status"], "parked")
+        self.assertEqual(record["docs_commit"], result.docs_commit)
+        self.assertIn("+Retries up to n times", record["patch"])
+        self.assertEqual(gitio.resolve(self.root, "main"), self.head)
+        # Idempotent: the hook re-firing for the same commit does nothing new.
+        again = engine.run_update(self.root, self._anchored(), self.cfg,
+                                  FakeRuntime("MUST NOT BE CALLED"))
+        self.assertEqual(again.status, "parked")
+
+        _git(self.root, "checkout", "-q", "main")
+        outcomes = apply_mod.apply_pending(self.root, self.cfg)
+        self.assertEqual(outcomes[0].status, "landed")
+        self.assertEqual((self.root / "docs/api.md").read_text(), NEW_DOC)
+
+    def test_rejected_draft_is_fed_back_and_retried(self) -> None:
+        prompts = []
+        broken = NEW_DOC + "\nSee [missing](nope.md).\n"
+
+        def answer(prompt: str) -> str:
+            prompts.append(prompt)
+            if "## Final response" in prompt:
+                return _link()
+            editor_calls = sum("Candidate documents" in p for p in prompts)
+            return _upd(broken) if editor_calls == 1 else _upd()
+
+        result = engine.run_update(self.root, self._anchored(), self.cfg, FakeRuntime(answer))
+        self.assertEqual(result.status, "committed")
+        self.assertEqual(len(prompts), 3)
+        self.assertIn("Previous answer was rejected", prompts[2])
+        self.assertIn("broken link", prompts[2])
+        self.assertNotIn("Previous answer was rejected", prompts[1])
+        self.assertEqual([r["status"] for r in history.recent(self.repo_id)], ["committed"])
+
+    def test_three_rejected_drafts_fail_loudly_with_the_last_reason(self) -> None:
+        broken = NEW_DOC + "\nSee [missing](nope.md).\n"
+        calls = []
+
+        def answer(prompt: str) -> str:
+            calls.append(prompt)
+            return _link() if "## Final response" in prompt else _upd(broken)
+
+        with self.assertRaises(VerificationFailed):
+            engine.run_update_guarded(self.root, self._anchored(), self.cfg, FakeRuntime(answer))
+        self.assertEqual(len(calls), 1 + engine.MAX_DRAFT_ATTEMPTS)
+        record = history.recent(self.repo_id, limit=1)[0]
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["reason"], "verification_failed")
+        self.assertIn("broken link", record["summary"])
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), self.head)
+
+    def test_unavailable_runtime_backs_off_and_retries(self) -> None:
+        failures = {"left": 2}
+
+        def answer(prompt: str) -> str:
+            if failures["left"]:
+                failures["left"] -= 1
+                raise RuntimeUnavailable("claude CLI exited 1")
+            return _link() if "## Final response" in prompt else _upd()
+
+        with mock.patch("choobi.engine.time.sleep") as sleep:
+            result = engine.run_update(self.root, self._anchored(), self.cfg, FakeRuntime(answer))
+        self.assertEqual(result.status, "committed")
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], list(engine.RUNTIME_BACKOFF))
+
+    def test_runtime_that_stays_down_fails_with_runtime_unavailable(self) -> None:
+        def answer(prompt: str) -> str:
+            raise RuntimeUnavailable("down")
+
+        with mock.patch("choobi.engine.time.sleep"):
+            with self.assertRaises(RuntimeUnavailable):
+                engine.run_update_guarded(self.root, self._anchored(), self.cfg,
+                                          FakeRuntime(answer))
+        self.assertEqual(history.recent(self.repo_id, limit=1)[0]["reason"],
+                         "runtime_unavailable")
+
+    def test_stale_draft_triggers_one_fresh_run(self) -> None:
+        runs = {"n": 0}
+
+        def answer(prompt: str) -> str:
+            if "## Final response" in prompt:
+                runs["n"] += 1
+                if runs["n"] == 1:
+                    # A human commits to the target while Choobi is thinking.
+                    (self.root / "docs/api.md").write_text(
+                        "---\ncovers: src/api.py\n---\n# API\n\nHuman edit.\n")
+                    _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "human docs")
+                return _link()
+            return _upd("---\ncovers: src/api.py\n---\n# API\n\nHuman edit. Default 3.\n")
+
+        result = engine.run_update_guarded(self.root, self._anchored(), self.cfg,
+                                           FakeRuntime(answer))
+        self.assertEqual(result.status, "committed")
+        self.assertEqual(runs["n"], 2)
+        self.assertIn("Human edit. Default 3.", (self.root / "docs/api.md").read_text())
+        self.assertEqual([r["status"] for r in history.recent(self.repo_id)], ["committed"])
+
+    def test_silent_carries_an_assessment(self) -> None:
+        def answer(prompt: str) -> str:
+            if "## Final response" in prompt:
+                return _link()
+            self.assertIn("one-sentence", prompt)
+            return _silent("checked docs/api.md: the retry default is already documented")
+
+        result = engine.run_update(self.root, self._anchored(), self.cfg, FakeRuntime(answer))
+        self.assertEqual((result.status, result.reason), ("no_op", "model_silent"))
+        self.assertIn("already documented", history.recent(self.repo_id, limit=1)[0]["summary"])
+
+    def test_ownership_findings_reach_the_editor(self) -> None:
+        prompts = []
+
+        def answer(prompt: str) -> str:
+            prompts.append(prompt)
+            if "## Final response" in prompt:
+                return _link(findings="retry() gained n=3 default in src/api.py:1")
+            return _upd()
+
+        engine.run_update(self.root, self._anchored(), self.cfg, FakeRuntime(answer))
+        self.assertIn("findings from the ownership review: retry() gained n=3", prompts[1])
+
+    def test_creation_review_sees_existing_documents(self) -> None:
+        repos_mod = __import__("choobi.repos", fromlist=["repos"])
+        repos_mod.save_sop(self.repo_id,
+                           "---\nallow_create: true\ncreate_roots: [docs/internal/features/]\n---\n")
+        (self.root / "src/export.py").write_text('"""Public export API."""\ndef export(): pass\n')
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "add export")
+        head = gitio.resolve(self.root, "HEAD")
+        seen = {}
+
+        def answer(prompt: str) -> str:
+            if "proposes CREATING" in prompt:
+                seen["review"] = prompt
+                return json.dumps({"approve": True, "reason": "new surface"})
+            if "## Final response" in prompt:
+                return json.dumps({"action": "create", "doc": "", "area": "export",
+                                   "scope": "area"})
+            return json.dumps({"disposition": "create", "target": "docs/internal/features/export.md",
+                               "summary": "documented export", "content": "# Export\n\nExports.\n",
+                               "source_paths": ["src/export.py"]})
+
+        result = engine.run_update(self.root, self._anchored(head), self.cfg, FakeRuntime(answer))
+        self.assertEqual(result.status, "committed")
+        self.assertIn("Existing documents", seen["review"])
+        self.assertIn("docs/api.md | title: API", seen["review"])
+
+    def test_chat_only_detached_run_reviews_ownership_with_the_conversation(self) -> None:
+        prompts = []
+
+        def answer(prompt: str) -> str:
+            prompts.append(prompt)
+            return _link() if "## Final response" in prompt else _upd()
+
+        req = UpdateRequest(detached=True, chat_context="DECISION: retries default to 3",
+                            trigger="agent_chat")
+        result = engine.run_update(self.root, req, self.cfg, FakeRuntime(answer))
+        self.assertEqual(result.status, "committed")
+        self.assertIn("## Conversation context", prompts[0])
+        self.assertIn("retries default to 3", prompts[0])
+
+    def test_committed_docs_are_pushed_where_the_developer_already_pushed(self) -> None:
+        add_remote(self.root, self.remote)
+        _git(self.root, "push", "-q", "-u", "origin", "main")
+
+        def answer(prompt: str) -> str:
+            return _link() if "## Final response" in prompt else _upd()
+
+        result = engine.run_update(self.root, self._anchored(), self.cfg, FakeRuntime(answer))
+        self.assertEqual((result.status, result.push), ("committed", pushing.PUSHED))
+        self.assertIn("Pushed to your branch", result.completion_message)
+        self.assertEqual(_git(self.remote, "rev-parse", "main"), result.docs_commit)
+        self.assertEqual(history.recent(self.repo_id, limit=1)[0]["push"], pushing.PUSHED)
+
+    def test_unpushed_branch_is_never_pushed_by_choobi(self) -> None:
+        add_remote(self.root, self.remote)
+        _git(self.root, "push", "-q", "-u", "origin", "main")
+        (self.root / "src/api.py").write_text("def retry(n=4): return n\n")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "not pushed yet")
+        head = gitio.resolve(self.root, "HEAD")
+
+        def answer(prompt: str) -> str:
+            return _link() if "## Final response" in prompt else _upd()
+
+        result = engine.run_update(self.root, self._anchored(head), self.cfg, FakeRuntime(answer))
+        self.assertEqual((result.status, result.push), ("committed", pushing.NOT_PUBLISHED))
+        self.assertEqual(_git(self.remote, "rev-parse", "main"), self.head)
 
 
 if __name__ == "__main__":

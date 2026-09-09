@@ -463,8 +463,9 @@ class ChoobiTest(unittest.TestCase):
         self.assertEqual(r.status, "committed")
         self.assertIn("## Notes", (self.root / "docs" / "api.md").read_text())
 
-    def test_concurrent_edit_conflict(self) -> None:
-        # Model returns content, but the file changes after hashing (simulated) -> conflict.
+    def test_concurrent_edit_parks_and_keeps_the_users_edit(self) -> None:
+        # The user starts editing the target while the model works. Choobi must neither fail
+        # nor overwrite: the verified docs commit is parked and the user's edit is untouched.
         class MutatingRuntime(FakeRuntime):
             def complete(self, prompt: str, system: str = "", timeout: int = 180,
                          schema=None) -> str:
@@ -472,9 +473,12 @@ class ChoobiTest(unittest.TestCase):
                 return UPDATE_RESP
         rt = MutatingRuntime(UPDATE_RESP)
         rt.root = str(self.root)  # type: ignore[attr-defined]
-        with self.assertRaises(Conflict):
-            run_update(self.root, UpdateRequest(targets=["docs/api.md"], detached=True,
+        r = run_update(self.root, UpdateRequest(targets=["docs/api.md"], detached=True,
                                                 instruction="x"), self.cfg, rt)
+        self.assertEqual(r.status, "parked")
+        self.assertIn("uncommitted", r.reason)
+        self.assertEqual((self.root / "docs" / "api.md").read_text(), "mutated after read\n")
+        self.assertEqual(len(gitio.pending_refs(self.root)), 1)
 
     # --- history / status ---
     def test_status_render(self) -> None:
