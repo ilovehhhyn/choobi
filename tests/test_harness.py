@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from choobi import apply as apply_mod, baseline, cli, coalesce, commitwriter, config, docs, engine, gitio, history, pushing, status, verify
+from choobi import apply as apply_mod, audit, baseline, cli, coalesce, commitwriter, config, docs, engine, gitio, history, pushing, status, verify
 from choobi.engine import UpdateRequest
 from choobi.errors import Conflict, NotAllowedPath, Parked, PushRejected, RuntimeUnavailable, VerificationFailed
 from choobi.runtime import FakeRuntime
@@ -744,6 +744,64 @@ class StatusTest(HarnessCase):
         self.assertIn("checked-out branch is other", out)
         report = status.report(self.root)
         self.assertEqual(report["parked"][0]["pending"], pending)
+
+
+class AuditTest(HarnessCase):
+    def test_audit_reports_contradicted_claims_and_writes_nothing_to_the_repo(self) -> None:
+        prompts = []
+
+        def answer(prompt: str) -> str:
+            prompts.append(prompt)
+            self.assertIn("Retries once.", prompt)
+            self.assertIn("def retry(n=3)", prompt)
+            return json.dumps({"findings": [
+                {"claim": "Retries once.", "status": "contradicted",
+                 "evidence": "src/api.py:1 retry(n=3) defaults to three attempts"},
+                {"claim": "Works offline.", "status": "unverified",
+                 "evidence": "no network code is covered by this document"},
+            ]})
+
+        findings, notes = audit.run_audit(self.root, config.Config(), FakeRuntime(answer))
+        self.assertEqual(len(prompts), 1)                       # README.md has no covers: entry
+        self.assertEqual([f.status for f in findings], ["contradicted", "unverified"])
+        self.assertEqual(findings[0].doc, "docs/api.md")
+        self.assertEqual(len(notes), 1)
+        self.assertIn("README.md: skipped", notes[0])
+        self.assertEqual(_git(self.root, "status", "--porcelain"), "")
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), self.head)
+        repo_id = config.checkout_id(gitio.common_dir(self.root))
+        report = audit.report_path(repo_id).read_text()
+        self.assertIn("## Contradicted", report)
+        self.assertIn("**Retries once.**", report)
+        self.assertIn("## Skipped", report)
+        record = history.recent(repo_id, limit=1)[0]
+        self.assertEqual(record["status"], "audit")
+        self.assertIn("1 contradicted, 1 unverified, 1 skipped", record["summary"])
+
+    def test_audit_rejects_malformed_findings_then_accepts_a_corrected_answer(self) -> None:
+        calls = {"n": 0}
+
+        def answer(prompt: str) -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return json.dumps({"findings": [{"claim": "x", "status": "wrong"}]})
+            self.assertIn("Previous answer was rejected", prompt)
+            return json.dumps({"findings": []})
+
+        findings, _ = audit.run_audit(self.root, config.Config(), FakeRuntime(answer))
+        self.assertEqual(findings, [])
+        self.assertEqual(calls["n"], 2)
+
+    def test_cli_audit_prints_the_report(self) -> None:
+        with mock.patch("choobi.cli.gitio.repo_root", return_value=self.root), \
+             mock.patch("choobi.cli.config.Config.load", return_value=config.Config()), \
+             mock.patch("choobi.cli.get_runtime",
+                        return_value=FakeRuntime(json.dumps({"findings": []}))), \
+             mock.patch("builtins.print") as printed:
+            self.assertEqual(cli.main(["audit"]), 0)
+        text = "\n".join(str(c.args[0]) for c in printed.call_args_list)
+        self.assertIn("# choobi audit", text)
+        self.assertIn("report saved to", text)
 
 
 if __name__ == "__main__":

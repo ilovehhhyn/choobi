@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import (
-    agent_skill, apply as apply_mod, auth, coalesce, config, engine, gitio, help as help_mod,
-    history, hooks, locking, pr, status, views,
+    agent_skill, apply as apply_mod, audit, auth, coalesce, config, engine, gitio,
+    help as help_mod, history, hooks, locking, pr, status, views,
 )
 from .errors import ChoobiError, InvalidScope, PendingDocsUpdate, SourceCommitRequired
 from .runtime import get_runtime
@@ -64,6 +64,7 @@ def _build_parser() -> argparse.ArgumentParser:
     prp = sub.add_parser("pr", add_help=False)
     prp.add_argument("pr_cmd", choices=["create"])
     sub.add_parser("apply", add_help=False)
+    sub.add_parser("audit", add_help=False)
     return p
 
 
@@ -256,6 +257,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         if args.cmd == "apply":
             return _cmd_apply()
+        if args.cmd == "audit":
+            root = gitio.repo_root(Path.cwd())
+            cfg = config.Config.load()
+            findings, notes = audit.run_audit(root, cfg, get_runtime(cfg))
+            audited = len({f.doc for f in findings})
+            print(audit.render_report(findings, notes, audited).rstrip("\n"))
+            print(f"\nreport saved to {audit.report_path(config.checkout_id(gitio.common_dir(root)))}")
+            return 0
     except ChoobiError as exc:
         print(f"{status.FAILED}   ({exc.reason}): {exc.message}", file=sys.stderr)
         return 1

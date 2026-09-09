@@ -40,8 +40,9 @@ COMMANDS: List[Command] = [
                "--detached --working. --chat reads conversation evidence from stdin. Text after "
                "-- is an instruction, e.g. choobi update docs/api.md --detached -- \"clarify the backoff\"."},
     {"command": "choobi status",
-     "summary": "show pending / failed / no-op jobs and the repo checkpoint",
-     "detail": "A deterministic read of local state. No model call."},
+     "summary": "show running / parked / failed / no-op work and the repo checkpoint",
+     "detail": "A deterministic read of local state. No model call. Parked docs commits are "
+               "listed with the reason they did not land and the `choobi apply` hint."},
     {"command": "choobi docs",
      "summary": "list the docs choobi can update in this repo",
      "detail": "Lists the writable documents (README, docs/**, *-plan.md) and the code each "
@@ -59,14 +60,22 @@ COMMANDS: List[Command] = [
      "detail": "Shows the immutable baseline followed by any personal overrides."},
     {"command": "choobi pr create",
      "summary": "create a PR via gh and annotate it",
-     "detail": "Refuses while a docs update is active, opens the PR with the authenticated gh CLI, and "
-               "inserts the line 'choobi updated docs.' when a docs commit exists."},
+     "detail": "Opens the PR with the authenticated gh CLI and inserts the line 'choobi updated "
+               "docs.' when a docs commit exists. Never waits for a running update: the docs "
+               "commit rides the same branch and is pushed to the same PR when it lands."},
     {"command": "choobi apply",
      "summary": "land parked docs commits onto the current branch",
      "detail": "A background update parks its verified docs commit on refs/choobi/pending/ "
                "instead of racing you when you switched branch, were editing the target, or had "
                "a merge/rebase in progress. apply attaches every parked commit whose source is on "
                "this branch and pushes under the usual rule (only where you already pushed)."},
+    {"command": "choobi audit",
+     "summary": "read-only stale-claim report for the existing docs",
+     "detail": "Audits every writable document at HEAD against the source files its covers: "
+               "front matter names, and reports claims about current behavior the code "
+               "contradicts, plus claims it cannot verify. Writes nothing to the repository; the "
+               "report is printed and saved under ~/.choobi/repos/<id>/audit.md. Run it once when "
+               "introducing choobi to a repository with existing documentation."},
     {"command": "choobi help [COMMAND]",
      "summary": "this command reference",
      "detail": "Shows all commands, or details for one."},
