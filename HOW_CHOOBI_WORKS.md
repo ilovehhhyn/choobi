@@ -164,24 +164,57 @@ commits the remainder.
 
 ## Git and concurrency model
 
-Choobi creates each documentation commit in an isolated temporary worktree. It rechecks the live
-branch and target, then attaches the prebuilt commit with one guarded cherry-pick. It never stages
-unrelated changes in the user's working tree.
+The contract is: background Choobi **only appends** to the branch that produced the commit, and
+**only when it cannot collide** with the developer. Everything below serves that sentence.
 
-Before attaching the commit, Choobi verifies that:
+**Evidence is pinned.** An anchored run (post-commit hook, `--commit`, `--range`, `--pr`) reads
+every document and changed source file from git objects at the tip of the source branch, never
+from the working tree. An edit the developer is still typing cannot reach a prompt or a commit.
+Only `--detached --staged/--working` runs read the checkout, because the checkout is their
+evidence.
 
-- the source commit is still an ancestor of the active branch;
-- every existing target still has the content hash used during generation;
-- every proposed new-document path is still absent;
-- the repository is not in the middle of another Git mutation; and
-- every output path remains inside the documentation allowlist.
+**The docs commit is built off the source branch tip** in an isolated temporary worktree and
+stored on `refs/choobi/pending/<source>`. Its parent is always a commit the developer made on that
+branch. Before building, every target's content hash is compared with the committed blob at that
+tip; a mismatch means someone committed to the document meanwhile, and Choobi answers with one
+fresh run against the new tree.
 
-A conflict aborts the cherry-pick and leaves the pending reference available for diagnosis. The
-docs commit carries a `CHOOBI_GENERATING` marker so its own post-commit hook exits immediately.
+**Attaching is a guarded cherry-pick** that runs only when all of these hold:
 
-Background work serializes through one advisory lock per repository. `choobi init` refuses to
-overwrite an unmanaged post-commit hook, and `choobi pr create` refuses to run while an update owns
-the repository lock.
+- the checked-out branch is, by name, the branch that produced the source commit (an ancestor
+  check alone would let a job land on a different branch that happens to contain the commit);
+- the branch still descends from the commit the docs were built on;
+- no merge, rebase, or cherry-pick is in progress; and
+- every target path is clean in the working tree.
+
+If any guard fails the commit is **parked**: the pending ref stays, history records the reason,
+`choobi status` shows it, and `choobi apply` lands it later on the right branch. The checkout is
+never modified. The docs commit carries a `CHOOBI_GENERATING` marker so its own post-commit hook
+exits immediately.
+
+**Bursts coalesce.** Each commit launches one detached job; jobs serialize on a per-repository
+lock. A job that wakes up to find newer human commits on its branch records itself as `coalesced`
+and exits, and the newest commit's job widens its diff range back over the coalesced commits.
+Choobi's own docs commits never count as newer human work. A commit that was amended or rebased
+away before its job ran is recorded as unreachable and skipped.
+
+**Push follows the developer.** After a commit lands, Choobi pushes it only if the branch has an
+upstream that already contains the source commit, and only as a fast-forward. It never forces,
+never pushes a branch the developer has not published, and records a rejected push as
+`push_rejected` while leaving the local commit in place. `auto_push: false` in
+`~/.choobi/config.json` turns this off.
+
+**Failures retry before they are recorded.** A draft that fails a deterministic check (broken
+link, secret-shaped text, too many dropped sections, off-scope path) is sent back to the model
+with the exact rejection, up to three drafts per decision. An unavailable runtime is retried with
+a backoff schedule. Only after those does history record a `failed` run, with the reason and the
+last draft, so a failure is never a silent drop.
+
+The hook process unsets the `GIT_DIR`/`GIT_INDEX_FILE` variables git exports into hooks, and every
+git call Choobi makes scrubs them too, so a detached job behaves identically to a shell command.
+`choobi init` refuses to overwrite an unmanaged post-commit hook. `choobi pr create` never waits
+for a running update: the docs commit rides the same branch and reaches the same pull request
+when it lands.
 
 ## Coding-agent context
 
@@ -259,8 +292,8 @@ Automatically covering every pull-request creation path requires a future hosted
 
 Choobi V1 intentionally updates one canonical document per run. It does not yet provide:
 
-- a durable event queue or crash recovery;
-- coalescing and ordered replay of background commit events;
+- a durable event queue that survives a job process dying before it enters the engine (a job
+  that dies afterwards leaves a typed record, and a parked commit survives on its ref);
 - operating-system completion notifications;
 - routing owner-review flags to a named CODEOWNER, chat user, or hosted service;
 - acknowledging or resolving an owner-review flag as active state rather than historical activity;
@@ -269,7 +302,9 @@ Choobi V1 intentionally updates one canonical document per run. It does not yet 
 - token, cost, call-budget, or daily-budget accounting.
 
 A failed or interrupted automatic run remains visible in history if it reached the engine. Rerun
-`choobi update` for work that never reached it. The current hook writes background output to
+`choobi update` for work that never reached it. `choobi audit` provides a read-only baseline for
+repositories whose documentation predates Choobi; it audits one document per model call against
+the files its `covers:` entry names and reports, never edits. The current hook writes background output to
 `~/.choobi/logs/hook.log` because a detached process cannot safely print after the terminal prompt
 has returned.
 

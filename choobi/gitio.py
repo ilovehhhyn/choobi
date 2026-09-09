@@ -12,13 +12,30 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
+# Repository-location variables git exports into hook processes (relative paths such as
+# GIT_DIR=.git and GIT_INDEX_FILE=.git/index). A detached job inherits them and every git call
+# from another directory — a temporary worktree above all — would then resolve them wrongly.
+# Choobi always passes an explicit cwd, so these are never needed and always scrubbed.
+_SCRUBBED_ENV = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
+    "GIT_QUARANTINE_PATH",
+)
+
+
+def git_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    env = {key: value for key, value in os.environ.items() if key not in _SCRUBBED_ENV}
+    env.update(extra or {})
+    return env
+
+
 def _run(root: Path, *args: str, env: Optional[Dict[str, str]] = None) -> str:
     proc = subprocess.run(
         ["git", *args],
         cwd=str(root),
         capture_output=True,
         text=True,
-        env={**os.environ, **(env or {})},
+        env=git_env(env),
     )
     if proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
@@ -31,6 +48,7 @@ def repo_root(start: Path) -> Path:
         cwd=str(start),
         capture_output=True,
         text=True,
+        env=git_env(),
     )
     if out.returncode != 0:
         raise RuntimeError("not inside a git repository")
@@ -85,6 +103,7 @@ def is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
         ["git", "merge-base", "--is-ancestor", ancestor, descendant],
         cwd=str(root),
         capture_output=True,
+        env=git_env(),
     )
     return proc.returncode == 0
 
@@ -134,7 +153,7 @@ def commit_paths(
 
 
 def _run_bytes(root: Path, *args: str) -> bytes:
-    proc = subprocess.run(["git", *args], cwd=str(root), capture_output=True)
+    proc = subprocess.run(["git", *args], cwd=str(root), capture_output=True, env=git_env())
     if proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.decode(errors='replace').strip()}")
     return proc.stdout
@@ -144,7 +163,7 @@ def current_branch(root: Path) -> Optional[str]:
     """The checked-out branch name, or None when HEAD is detached."""
     proc = subprocess.run(
         ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
-        cwd=str(root), capture_output=True, text=True,
+        cwd=str(root), capture_output=True, text=True, env=git_env(),
     )
     if proc.returncode != 0:
         return None
@@ -179,7 +198,7 @@ def upstream(root: Path) -> Optional["tuple[str, str]"]:
     """(remote, remote_branch) for the current branch's upstream, or None."""
     proc = subprocess.run(
         ["git", "rev-parse", "--symbolic-full-name", "@{u}"],
-        cwd=str(root), capture_output=True, text=True,
+        cwd=str(root), capture_output=True, text=True, env=git_env(),
     )
     if proc.returncode != 0:
         return None

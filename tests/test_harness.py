@@ -8,12 +8,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from choobi import apply as apply_mod, audit, baseline, cli, coalesce, commitwriter, config, docs, engine, gitio, history, pushing, status, verify
+from choobi import apply as apply_mod, audit, baseline, cli, coalesce, commitwriter, config, docs, engine, gitio, history, hooks, pushing, status, verify
 from choobi.engine import UpdateRequest
 from choobi.errors import Conflict, NotAllowedPath, Parked, PushRejected, RuntimeUnavailable, VerificationFailed
 from choobi.runtime import FakeRuntime
@@ -802,6 +804,80 @@ class AuditTest(HarnessCase):
         text = "\n".join(str(c.args[0]) for c in printed.call_args_list)
         self.assertIn("# choobi audit", text)
         self.assertIn("report saved to", text)
+
+
+class HookEndToEndTest(HarnessCase):
+    """The real post-commit hook, a real detached process, a fake model: commit and walk away."""
+
+    def _env(self, responses: list) -> dict:
+        env = dict(os.environ)
+        env.update({
+            "CHOOBI_HOME": self._home.name,
+            "CHOOBI_RUNTIME": "fake",
+            "CHOOBI_FAKE_RESPONSE": json.dumps(responses),
+            "PYTHONPATH": str(Path(__file__).resolve().parent.parent),
+            "PATH": os.environ.get("PATH", ""),
+        })
+        return env
+
+    def _wait_for(self, predicate, timeout: float = 30.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.25)
+        return False
+
+    def test_commit_and_push_carries_the_docs_commit_to_the_same_branch(self) -> None:
+        add_remote(self.root, self.remote)
+        _git(self.root, "push", "-q", "-u", "origin", "main")
+        hooks.install(self.root)
+        env = self._env([_link(), _upd()])
+
+        (self.root / "src/api.py").write_text("def retry(n=3, jitter=True): return n\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.root, check=True, env=env)
+        subprocess.run(["git", "commit", "-qm", "add retry jitter"], cwd=self.root, check=True,
+                       env=env, capture_output=True)
+        source = gitio.resolve(self.root, "HEAD")
+        subprocess.run(["git", "push", "-q"], cwd=self.root, check=True, env=env,
+                       capture_output=True)                       # the developer pushes at once
+
+        landed = self._wait_for(lambda: gitio.resolve(self.root, "HEAD") != source)
+        self.assertTrue(landed, (Path(self._home.name) / "logs/hook.log").read_text())
+        docs_commit = gitio.resolve(self.root, "HEAD")
+        self.assertEqual(gitio.resolve(self.root, "HEAD^"), source)
+        self.assertEqual(gitio.commit_subject(self.root, docs_commit), "add retry jitter")
+        self.assertEqual((self.root / "docs/api.md").read_text(), NEW_DOC)
+        self.assertEqual(_git(self.root, "status", "--porcelain", "--", "docs", "src"), "")
+        # Choobi pushed its commit because the developer had already pushed the source commit.
+        self.assertTrue(self._wait_for(
+            lambda: _git(self.remote, "rev-parse", "main") == docs_commit))
+        # The docs commit's own hook exited (CHOOBI_GENERATING); exactly one background run.
+        repo_id = config.checkout_id(gitio.common_dir(self.root))
+        self.assertTrue(self._wait_for(lambda: len(history.recent(repo_id)) >= 1))
+        time.sleep(1.0)
+        records = history.recent(repo_id)
+        self.assertEqual([r["status"] for r in records], ["committed"])
+        self.assertEqual(records[0]["push"], pushing.PUSHED)
+
+    def test_commit_while_editing_the_doc_parks_instead_of_touching_it(self) -> None:
+        hooks.install(self.root)
+        env = self._env([_link(), _upd()])
+        (self.root / "src/api.py").write_text("def retry(n=3, jitter=True): return n\n")
+        subprocess.run(["git", "add", "src/api.py"], cwd=self.root, check=True, env=env)
+        (self.root / "docs/api.md").write_text("# I am mid-edit\n")     # unstaged, untouched
+        subprocess.run(["git", "commit", "-qm", "add retry jitter"], cwd=self.root, check=True,
+                       env=env, capture_output=True)
+        source = gitio.resolve(self.root, "HEAD")
+        repo_id = config.checkout_id(gitio.common_dir(self.root))
+        self.assertTrue(self._wait_for(lambda: bool(history.recent(repo_id))),
+                        (Path(self._home.name) / "logs/hook.log").read_text())
+        record = history.recent(repo_id)[0]
+        self.assertEqual(record["status"], "parked")
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), source)
+        self.assertEqual((self.root / "docs/api.md").read_text(), "# I am mid-edit\n")
+        self.assertEqual(list(gitio.pending_refs(self.root)), [source])
+        self.assertIn("choobi apply", status.render(self.root))
 
 
 if __name__ == "__main__":

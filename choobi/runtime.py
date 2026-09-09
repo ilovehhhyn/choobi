@@ -150,7 +150,13 @@ class FakeRuntime(Runtime):
 def get_runtime(cfg: config.Config) -> Runtime:
     """Select the runtime by config. CHOOBI_RUNTIME=fake overrides for deterministic tests."""
     if os.environ.get("CHOOBI_RUNTIME") == "fake":
-        return FakeRuntime(os.environ.get("CHOOBI_FAKE_RESPONSE", ""))
+        canned = os.environ.get("CHOOBI_FAKE_RESPONSE", "")
+        try:
+            parsed = json.loads(canned)
+        except json.JSONDecodeError:
+            parsed = None
+        # A JSON array scripts one response per call (ownership review, then the editor).
+        return FakeRuntime(parsed if isinstance(parsed, list) else canned)
     if cfg.agent == "claude":
         return ClaudeCliRuntime()
     if cfg.agent == "codex":

@@ -50,7 +50,30 @@ choobi init
 choobi                     # to view ui window 
 ```
 
-Now commit code as usual! Choobi follows and works meticulously. 
+Now commit code as usual! Choobi follows and works meticulously.
+
+## What happens when you commit
+
+Choobi fires on **commit**, never on push, and never blocks either. A minute or so later one
+of these has happened, and `choobi status` tells you which:
+
+| Outcome | What you see |
+| --- | --- |
+| **Landed** | A `docs:` commit sits right behind yours on the same branch, reusing your commit message. |
+| **Landed and pushed** | You had already pushed the source commit, so Choobi pushed its docs commit to the same remote branch (fast-forward only, never `--force`, never a new branch). Your open PR simply gains a commit. |
+| **Nothing to document** | No commit. The log records what was checked and why nothing changed. |
+| **Coalesced** | You committed several times quickly. Older jobs fold into the newest one, which reviews the whole range. One docs commit, not five. |
+| **Parked** | You switched branch, were editing the target document, or had a merge/rebase running. The verified docs commit waits on `refs/choobi/pending/`; `choobi apply` lands it. Your checkout is never touched. |
+| **Failed after retries** | The model's draft kept failing a deterministic check (broken link, secret, dropped sections), or the runtime stayed down through the backoff schedule. Recorded with the exact reason and the last draft. |
+
+Rules that hold in every case: your commits are never amended, rebased, or reordered; a push
+is never blocked; and every anchored review reads the committed tree, so an edit you are still
+typing can never leak into a docs commit.
+
+Telling a coding agent "commit and push" therefore just works: the agent never learns Choobi
+exists, and the docs commit arrives on the same branch and PR shortly after. Set
+`"auto_push": false` in `~/.choobi/config.json` if you would rather the docs commit only ride
+your next push.
 
 ## Highlights
 
@@ -62,8 +85,12 @@ Now commit code as usual! Choobi follows and works meticulously.
 - **Protects future direction or PRDs.** It treats plans as intent, not shipped behavior, and leaves them
   unchanged while surfacing an LLM-written owner-review message when code contradicts them.
 - **Fits your coding setup.** Use the automatic hook, a coding-agent command, or the CLI.
-- **Leaves an audit trail.** Every update, flag, no-op, and failure is available in the CLI and UI
-  changelog.
+- **Leaves an audit trail.** Every update, parked commit, flag, no-op, and failure is available in
+  the CLI and UI changelog, each with its reason.
+- **Never races you.** Docs commits are built off the committed tree and only appended when your
+  checkout cannot collide; otherwise they park for `choobi apply`.
+- **Starts from an honest baseline.** `choobi audit` reports which existing claims the code
+  contradicts before Choobi ever edits a page.
 
 **There are three ways to ask Choobi to work:**
 
@@ -82,12 +109,14 @@ Now commit code as usual! Choobi follows and works meticulously.
 | `choobi install` | Install the Choobi skill for Claude Code and Codex. |
 | `choobi auth [claude\|codex]` | Show runtime status, or authenticate and select one active runtime. |
 | `choobi update [DOC] SCOPE [--chat] [-- TEXT]` | Run a documentation review, optionally pinned to one document. |
-| `choobi status` | Show pending, flagged, failed, and no-op work plus the repository checkpoint. |
+| `choobi status` | Show running, parked, flagged, failed, and no-op work plus the repository checkpoint. |
+| `choobi apply` | Land parked docs commits onto the current branch. |
+| `choobi audit` | Read-only report of documentation claims the code contradicts or cannot verify. |
 | `choobi docs` | List the documents Choobi can update in the current repository. |
 | `choobi changelog [-n N] [--all] [--status S]` | Browse recent Choobi activity. |
 | `choobi show <id>` | Show one activity record and its exact patch. |
 | `choobi style` | Print the resolved documentation style guide. |
-| `choobi pr create` | Create a pull request with `gh` and annotate it when Choobi updated docs. |
+| `choobi pr create` | Create a pull request with `gh` and annotate it when Choobi updated docs. Never waits for a running update. |
 | `choobi help [COMMAND]` | Show the full command reference or help for one command. |
 
 ### Manual update examples
@@ -116,6 +145,19 @@ choobi update docs/api.md --detached -- "clarify the retry backoff"
 
 A manual update must have one commit-based scope (`--commit`, `--range`, or `--pr`) or use
 `--detached`. Run `choobi help update` for the complete grammar.
+
+### Introducing Choobi to a repository with existing docs
+
+Run the read-only audit first. It checks every writable document against the source files its
+`covers:` front matter names and reports contradicted and unverifiable claims without changing
+anything:
+
+```bash
+choobi audit
+```
+
+Documents without a `covers:` entry are listed as skipped; add one, or enable repository reads
+(see below) so the model can look up evidence itself.
 
 ## Use the desktop window
 

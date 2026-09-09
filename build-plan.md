@@ -141,30 +141,43 @@ choobi creates no partial commit. The failure is recorded with a typed reason an
 
 #### Concurrency contract
 
-**As built**, background processes serialize through one advisory lock per repository. They do not
-coalesce events, but lock acquisition order is not a durable commit queue and a process that dies
-before entering the engine leaves no recoverable event. Ordered persistence and crash recovery are
-required before the automatic path is production-grade.
+**As built**, background processes serialize through one advisory lock per repository and
+**coalesce**: a job that acquires the lock and finds newer human commits on its branch records
+itself as `coalesced` and exits, and the newest commit's job widens its diff range back over the
+coalesced commits. Choobi's own docs commits never count as newer human work. A source commit that
+was amended or rebased away is recorded as unreachable. Lock order is still not a durable queue: a
+process that dies before entering the engine leaves no recoverable event.
 
-Generation and verification produce a prebuilt commit in an isolated temporary worktree on a
-Choobi-owned pending ref. Choobi then rechecks the live checkout and attaches that commit with one
-guarded Git cherry-pick. It never manually patches or stages the live checkout. A conflict aborts
-the cherry-pick and leaves the pending ref for diagnosis.
-
-`choobi init` installs the post-commit hook and project agent skill, and refuses to overwrite an
-unmanaged existing hook. `choobi pr create` refuses to run while an update holds the repository
-lock. Draining durable queued events and unresolved pending refs remains release work.
+Anchored runs read every document and changed file from git objects at the source branch tip,
+never from the working tree. Generation and verification produce a prebuilt commit in an isolated
+temporary worktree **off that tip**, stored on a Choobi-owned pending ref. Choobi then attaches
+that commit with one guarded Git cherry-pick only when doing so cannot collide with the developer;
+otherwise the commit is **parked** and `choobi apply` lands it later. It never manually patches or
+stages the live checkout.
 
 Before attaching a pending commit, choobi checks:
 
-- the source commit is still an ancestor of the active branch;
-- every existing target document still has the content hash used during generation;
-- every proposed new-document path is still absent;
+- the checked-out branch is, by name, the branch that produced the source commit;
+- the branch still descends from the commit the docs were built on;
+- every existing target document still has, at the tip, the content hash used during generation;
+- every target path is clean in the working tree;
 - no git merge, rebase, cherry-pick, or commit is currently mutating the repository; and
 - every output path is inside the configured documentation allowlist.
 
-If any invariant fails, choobi does not write or commit. It records the exact failure and allows a
-later explicit `choobi update` to run against the new state.
+A stale target hash is answered by one fresh run against the new tree. Any other failed guard
+parks the commit with its reason; the checkout is never modified.
+
+After a commit lands, choobi pushes it to the branch's upstream only when that upstream already
+contains the source commit, and only as a fast-forward. It never forces or publishes a new branch.
+
+Deterministic rejections of a draft (broken link, secret-shaped text, dropped sections, off-scope
+path) are fed back to the model for up to three drafts; an unavailable runtime is retried with a
+backoff schedule. Only then is a run recorded as failed, with its reason and last draft.
+
+`choobi init` installs the post-commit hook and project agent skill, and refuses to overwrite an
+unmanaged existing hook. The hook unsets the repository-location variables git exports into hooks.
+`choobi pr create` never waits for a running update, because the docs commit reaches the same
+branch and pull request when it lands.
 
 Because a detached hook cannot safely print into a terminal after the shell prompt has returned,
 the current build writes to `~/.choobi/logs/hook.log` and local history. OS completion notification
