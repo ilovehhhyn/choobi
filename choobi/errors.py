@@ -90,3 +90,22 @@ class ContextTooLarge(ChoobiError):
 
 class PendingDocsUpdate(ChoobiError):
     reason = "pending_docs_update"
+
+
+class Parked(ChoobiError):
+    """The docs commit was built and verified but could not attach without colliding with the
+    developer's checkout (branch switched, target dirty, git operation in progress). The commit
+    waits on refs/choobi/pending/<source> for `choobi apply`."""
+
+    reason = "parked"
+
+    def __init__(self, pending: str, why: str) -> None:
+        super().__init__(why)
+        self.pending = pending
+        self.why = why
+
+
+class PushRejected(ChoobiError):
+    """The docs commit landed locally but the remote refused a fast-forward push."""
+
+    reason = "push_rejected"

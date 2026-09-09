@@ -13,8 +13,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from choobi import baseline, docs, gitio, verify
-from choobi.errors import Conflict, NotAllowedPath, VerificationFailed
+from choobi import baseline, commitwriter, docs, gitio, verify
+from choobi.errors import Conflict, NotAllowedPath, Parked, VerificationFailed
 
 
 def _git(root: Path, *args: str) -> str:
@@ -182,6 +182,105 @@ class VerifySplitTest(HarnessCase):
         with self.assertRaises(Conflict):
             verify.check_tree_state(self.root, "docs/api.md", is_create=False,
                                     expected_hash=expected)
+
+
+NEW_DOC = "---\ncovers: src/api.py\n---\n# API\n\nRetries up to n times (default 3).\n"
+
+
+class CommitWriterTest(HarnessCase):
+    def _write(self, **overrides):
+        kwargs = dict(
+            source_commit=self.head,
+            expected_hashes={"docs/api.md": gitio.file_hash(self.root, "docs/api.md")},
+            source_branch="main",
+        )
+        kwargs.update(overrides)
+        return commitwriter.write_and_commit(
+            self.root, {"docs/api.md": NEW_DOC}, "add configurable retry backoff", **kwargs)
+
+    def test_happy_path_appends_one_commit_and_clears_the_ref(self) -> None:
+        new_head = self._write()
+        self.assertEqual(new_head, gitio.resolve(self.root, "HEAD"))
+        self.assertEqual(gitio.resolve(self.root, "HEAD^"), self.head)
+        self.assertEqual((self.root / "docs/api.md").read_text(), NEW_DOC)
+        self.assertEqual(_git(self.root, "status", "--porcelain"), "")
+        self.assertEqual(gitio.pending_refs(self.root), {})
+
+    def test_switched_branch_parks_and_touches_neither_branch(self) -> None:
+        expected = gitio.file_hash(self.root, "docs/api.md")
+        _git(self.root, "checkout", "-q", "-b", "other")
+        (self.root / "other.txt").write_text("x")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "other work")
+        other_head = gitio.resolve(self.root, "HEAD")
+        with self.assertRaises(Parked) as caught:
+            self._write(expected_hashes={"docs/api.md": expected})
+        pending = caught.exception.pending
+        self.assertIn("other", caught.exception.why)
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), other_head)
+        self.assertEqual(gitio.resolve(self.root, "main"), self.head)
+        self.assertEqual(gitio.pending_refs(self.root), {self.head: pending})
+        # The parked commit was built on main's tip, not on the other branch.
+        self.assertEqual(gitio.resolve(self.root, f"{pending}^"), self.head)
+        self.assertIn("default 3", gitio.show_blob(self.root, pending, "docs/api.md").decode())
+
+    def test_dirty_target_parks_and_keeps_the_users_edit(self) -> None:
+        expected = gitio.file_hash(self.root, "docs/api.md")
+        (self.root / "docs/api.md").write_text("# my in-progress edit\n")
+        with self.assertRaises(Parked):
+            self._write(expected_hashes={"docs/api.md": expected})
+        self.assertEqual((self.root / "docs/api.md").read_text(), "# my in-progress edit\n")
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), self.head)
+        self.assertEqual(len(gitio.pending_refs(self.root)), 1)
+
+    def test_operation_in_progress_parks(self) -> None:
+        gitdir = Path(_git(self.root, "rev-parse", "--absolute-git-dir"))
+        (gitdir / "MERGE_HEAD").write_text(self.head + "\n")
+        with self.assertRaises(Parked) as caught:
+            self._write()
+        self.assertIn("in progress", caught.exception.why)
+        (gitdir / "MERGE_HEAD").unlink()
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), self.head)
+
+    def test_stale_draft_is_a_conflict_and_builds_nothing(self) -> None:
+        expected = gitio.file_hash(self.root, "docs/api.md")
+        (self.root / "docs/api.md").write_text("# human committed later\n")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "human docs edit")
+        with self.assertRaises(Conflict):
+            self._write(expected_hashes={"docs/api.md": expected})
+        self.assertEqual(gitio.pending_refs(self.root), {})
+        self.assertEqual((self.root / "docs/api.md").read_text(), "# human committed later\n")
+
+    def test_branch_advanced_by_unrelated_commit_still_attaches(self) -> None:
+        (self.root / "src/other.py").write_text("x = 1\n")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "unrelated")
+        tip = gitio.resolve(self.root, "HEAD")
+        new_head = self._write()
+        self.assertEqual(gitio.resolve(self.root, f"{new_head}^"), tip)
+        self.assertEqual(gitio.pending_refs(self.root), {})
+
+    def test_rewritten_branch_is_a_conflict(self) -> None:
+        _git(self.root, "commit", "-q", "--amend", "-m", "amended")
+        with self.assertRaises(Conflict):
+            self._write()
+
+    def test_detached_head_builds_off_head(self) -> None:
+        _git(self.root, "checkout", "-q", "--detach")
+        new_head = self._write(source_branch=None)
+        self.assertEqual(gitio.resolve(self.root, f"{new_head}^"), self.head)
+
+    def test_attach_pending_lands_a_parked_commit_and_is_idempotent(self) -> None:
+        expected = gitio.file_hash(self.root, "docs/api.md")
+        _git(self.root, "checkout", "-q", "-b", "other")
+        with self.assertRaises(Parked) as caught:
+            self._write(expected_hashes={"docs/api.md": expected})
+        _git(self.root, "checkout", "-q", "main")
+        pending = caught.exception.pending
+        landed = commitwriter.attach_pending(self.root, pending, paths=["docs/api.md"])
+        self.assertEqual((self.root / "docs/api.md").read_text(), NEW_DOC)
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), landed)
+        # Re-attaching the same content is a no-op, never a duplicate commit.
+        self.assertEqual(commitwriter.attach_pending(self.root, pending, paths=["docs/api.md"]),
+                         landed)
 
 
 if __name__ == "__main__":
