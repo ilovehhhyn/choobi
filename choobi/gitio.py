@@ -131,3 +131,85 @@ def commit_paths(
     # --cleanup=verbatim preserves a reused source message byte-for-byte (build-plan §3.1).
     _run(root, "commit", "--cleanup=verbatim", "-m", message, "--", *paths, env=generating_env)
     return resolve(root, "HEAD")
+
+
+def _run_bytes(root: Path, *args: str) -> bytes:
+    proc = subprocess.run(["git", *args], cwd=str(root), capture_output=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.decode(errors='replace').strip()}")
+    return proc.stdout
+
+
+def current_branch(root: Path) -> Optional[str]:
+    """The checked-out branch name, or None when HEAD is detached."""
+    proc = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+        cwd=str(root), capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def ls_tree(root: Path, rev: str) -> Dict[str, str]:
+    """path -> mode for every entry in the committed tree at `rev` (recursive)."""
+    out = _run_bytes(root, "ls-tree", "-r", "-z", rev)
+    modes: Dict[str, str] = {}
+    for entry in out.split(b"\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition(b"\t")
+        mode = meta.split(b" ", 1)[0].decode()
+        modes[path.decode(errors="replace")] = mode
+    return modes
+
+
+def show_blob(root: Path, rev: str, path: str) -> bytes:
+    """Committed bytes of `path` at `rev`. Raises RuntimeError when absent."""
+    return _run_bytes(root, "show", f"{rev}:{path}")
+
+
+def commits_between(root: Path, base: str, tip: str) -> List[str]:
+    """Commits in base..tip, oldest first."""
+    out = _run(root, "rev-list", "--reverse", f"{base}..{tip}")
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def upstream(root: Path) -> Optional["tuple[str, str]"]:
+    """(remote, remote_branch) for the current branch's upstream, or None."""
+    proc = subprocess.run(
+        ["git", "rev-parse", "--symbolic-full-name", "@{u}"],
+        cwd=str(root), capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    full = proc.stdout.strip()            # refs/remotes/<remote>/<branch>
+    if not full.startswith("refs/remotes/"):
+        return None
+    branch = current_branch(root)
+    if branch is None:
+        return None
+    remote = _run(root, "config", f"branch.{branch}.remote").strip()
+    prefix = f"refs/remotes/{remote}/"
+    if not remote or not full.startswith(prefix):
+        return None
+    return remote, full[len(prefix):]
+
+
+def push_fast_forward(
+    root: Path, remote: str, branch: str, sha: str, env: Dict[str, str],
+) -> None:
+    """Push `sha` to `refs/heads/<branch>` on `remote`. Never forces; raises on rejection."""
+    _run(root, "push", "--quiet", "--no-verify", remote, f"{sha}:refs/heads/{branch}", env=env)
+
+
+def pending_refs(root: Path) -> Dict[str, str]:
+    """source_sha -> pending docs commit for every refs/choobi/pending/* ref."""
+    out = _run(root, "for-each-ref", "--format=%(refname) %(objectname)", "refs/choobi/pending/")
+    refs: Dict[str, str] = {}
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        refname, sha = line.split()
+        refs[refname.rsplit("/", 1)[1]] = sha
+    return refs
