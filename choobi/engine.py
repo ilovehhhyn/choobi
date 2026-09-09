@@ -1191,6 +1191,11 @@ def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runt
                                 summary=draft.summary)
 
     target, content, summary = draft.target, draft.content, draft.summary
+    if not draft.is_create and content == contents.get(target):
+        # The model proposed the document exactly as it already is: correct, and nothing to write.
+        return _finish_no_write(root, req, repo_id, repo_path, head, started, snapshot,
+                                status="no_op", reason="already_current",
+                                summary=summary or f"{target} already reflects this change")
     expected_hash = None if draft.is_create else hashes.get(target)
     patch = _unified(contents.get(target, ""), content, target)
     message = _authoring_message(root, req, summary)
@@ -1276,15 +1281,17 @@ def run_update_guarded(root: Path, req: UpdateRequest, cfg: config.Config, runti
         except Conflict as exc:
             if attempts < 2:
                 continue
-            _record_failure(root, req, exc)
+            _record_failure(root, req, exc.reason, exc.message)
             raise
         except ChoobiError as exc:
-            _record_failure(root, req, exc)
+            _record_failure(root, req, exc.reason, exc.message)
+            raise
+        except Exception as exc:  # noqa: BLE001 — a background job must never fail invisibly
+            _record_failure(root, req, "internal_error", f"{type(exc).__name__}: {exc}")
             raise
 
 
-def _record_failure(root: Path, req: UpdateRequest, exc: ChoobiError) -> None:
+def _record_failure(root: Path, req: UpdateRequest, reason: str, message: str) -> None:
     repo_id, repo_path = _repo_identity(root)
     history.add_record(repo_id, repo_path, req.trigger, "failed",
-                       source_commit=req.source_commit, summary=exc.message or "",
-                       reason=exc.reason)
+                       source_commit=req.source_commit, summary=message or "", reason=reason)

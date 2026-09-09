@@ -38,7 +38,8 @@ def _run(root: Path, *args: str, env: Optional[Dict[str, str]] = None) -> str:
         env=git_env(env),
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        raise RuntimeError(f"git {' '.join(args)} failed: {detail}")
     return proc.stdout
 
 

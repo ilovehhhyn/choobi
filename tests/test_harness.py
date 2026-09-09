@@ -526,6 +526,20 @@ class EngineTest(HarnessCase):
         self.assertEqual(history.recent(self.repo_id, limit=1)[0]["reason"],
                          "runtime_unavailable")
 
+    def test_unexpected_exception_is_recorded_before_it_propagates(self) -> None:
+        with mock.patch("choobi.engine._collect_diff", side_effect=OSError("disk gone")):
+            with self.assertRaises(OSError):
+                engine.run_update_guarded(self.root, self._anchored(), self.cfg,
+                                          FakeRuntime("unused"))
+        record = history.recent(self.repo_id, limit=1)[0]
+        self.assertEqual((record["status"], record["reason"]), ("failed", "internal_error"))
+        self.assertIn("disk gone", record["summary"])
+
+    def test_scripted_fake_runtime_accepts_objects(self) -> None:
+        rt = FakeRuntime([{"a": 1}, "plain"])
+        self.assertEqual(rt.complete("x"), '{"a": 1}')
+        self.assertEqual(rt.complete("x"), "plain")
+
     def test_stale_draft_triggers_one_fresh_run(self) -> None:
         runs = {"n": 0}
 
@@ -546,6 +560,17 @@ class EngineTest(HarnessCase):
         self.assertEqual(runs["n"], 2)
         self.assertIn("Human edit. Default 3.", (self.root / "docs/api.md").read_text())
         self.assertEqual([r["status"] for r in history.recent(self.repo_id)], ["committed"])
+
+    def test_identical_content_is_an_already_current_no_op(self) -> None:
+        current = docs.Tree.at(self.root, "HEAD").read("docs/api.md")[0]
+
+        def answer(prompt: str) -> str:
+            return _link() if "## Final response" in prompt else _upd(current, "nothing new")
+
+        result = engine.run_update(self.root, self._anchored(), self.cfg, FakeRuntime(answer))
+        self.assertEqual((result.status, result.reason), ("no_op", "already_current"))
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), self.head)
+        self.assertEqual(gitio.pending_refs(self.root), {})
 
     def test_silent_carries_an_assessment(self) -> None:
         def answer(prompt: str) -> str:

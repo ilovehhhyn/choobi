@@ -132,7 +132,10 @@ class FakeRuntime(Runtime):
     name = "fake"
 
     def __init__(self, response) -> None:
-        self.response = list(response) if isinstance(response, list) else response
+        if isinstance(response, list):
+            # Scripted answers may be given as objects; the engine always receives text.
+            response = [item if isinstance(item, str) else json.dumps(item) for item in response]
+        self.response = response
         self.last_prompt: Optional[str] = None
 
     def complete(
