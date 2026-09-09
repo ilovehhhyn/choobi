@@ -940,6 +940,23 @@ class _Draft:
     reason: str = ""
 
 
+def _source_branch(root: Path, req: UpdateRequest) -> "Tuple[str, Optional[str]]":
+    """(tip, branch) the docs commit must be built on.
+
+    Normally the checked-out branch. If the developer already switched away from the branch
+    that produced the source commit, the docs still belong to that branch: build on its tip and
+    let the commit writer park. When no single branch owns the commit the current HEAD is used
+    and the writer reports the conflict.
+    """
+    head = gitio.resolve(root, "HEAD")
+    branch = gitio.current_branch(root)
+    if req.source_commit and not gitio.is_ancestor(root, req.source_commit, head):
+        owners = gitio.branches_containing(root, req.source_commit)
+        if len(owners) == 1:
+            return gitio.resolve(root, f"refs/heads/{owners[0]}"), owners[0]
+    return head, branch
+
+
 def _evidence_tree(root: Path, req: UpdateRequest, head: str) -> docs.Tree:
     """Anchored runs read git objects at the job's HEAD; uncommitted scopes read the checkout."""
     if req.use_staged or req.use_working:
@@ -966,8 +983,7 @@ def _finish_no_write(
 def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runtime) -> UpdateResult:
     started = time.monotonic()
     repo_id, repo_path = _repo_identity(root)
-    head = gitio.resolve(root, "HEAD")
-    source_branch = gitio.current_branch(root)
+    head, source_branch = _source_branch(root, req)
     tools_enabled = _tools_enabled(cfg)
     tree = _evidence_tree(root, req, head)
     tree_files = set(tree.files())

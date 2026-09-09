@@ -10,7 +10,8 @@ from typing import Any, Dict, List, Optional
 
 from . import baseline, config, docs as docs_mod
 
-_GLYPH = {"committed": "✓", "no_op": "·", "flagged": "!", "failed": "✕"}
+_GLYPH = {"committed": "✓", "parked": "⧗", "no_op": "·", "coalesced": "·", "flagged": "!",
+          "failed": "✕", "audit": "≡"}
 
 
 def _when(ts: str) -> str:
@@ -62,6 +63,8 @@ def render_record(r: Optional[Dict[str, Any]]) -> str:
         out.append("summary: " + r["summary"])
     if r["reason"]:
         out.append("reason: " + r["reason"])
+    if r.get("push"):
+        out.append("push: " + r["push"])
     if r["patch"]:
         out.append("\n--- patch ---\n" + r["patch"].rstrip("\n"))
     return "\n".join(out)

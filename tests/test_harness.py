@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from choobi import apply as apply_mod, baseline, cli, commitwriter, config, docs, engine, gitio, history, pushing, verify
+from choobi import apply as apply_mod, baseline, cli, coalesce, commitwriter, config, docs, engine, gitio, history, pushing, status, verify
 from choobi.engine import UpdateRequest
 from choobi.errors import Conflict, NotAllowedPath, Parked, PushRejected, RuntimeUnavailable, VerificationFailed
 from choobi.runtime import FakeRuntime
@@ -633,6 +633,117 @@ class EngineTest(HarnessCase):
         result = engine.run_update(self.root, self._anchored(head), self.cfg, FakeRuntime(answer))
         self.assertEqual((result.status, result.push), ("committed", pushing.NOT_PUBLISHED))
         self.assertEqual(_git(self.remote, "rev-parse", "main"), self.head)
+
+
+def _commit(root: Path, path: str, content: str, msg: str) -> str:
+    (root / path).parent.mkdir(parents=True, exist_ok=True)
+    (root / path).write_text(content)
+    _git(root, "add", "-A"); _git(root, "commit", "-qm", msg)
+    return gitio.resolve(root, "HEAD")
+
+
+class CoalesceTest(HarnessCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.repo_id = config.checkout_id(gitio.common_dir(self.root))
+
+    def test_burst_folds_older_jobs_into_the_newest_and_widens_its_range(self) -> None:
+        a = self.head
+        b = _commit(self.root, "src/b.py", "b = 1\n", "b")
+        c = _commit(self.root, "src/c.py", "c = 1\n", "c")
+        da = coalesce.decide(self.root, self.repo_id, a, cli.EMPTY_TREE)
+        self.assertEqual((da.action, da.into), (coalesce.COALESCED, c))
+        history.add_record(self.repo_id, str(self.root), "post_commit", "coalesced",
+                           source_commit=a, reason="coalesced_into_newer_commit")
+        db = coalesce.decide(self.root, self.repo_id, b, cli.EMPTY_TREE)
+        self.assertEqual(db.action, coalesce.COALESCED)
+        history.add_record(self.repo_id, str(self.root), "post_commit", "coalesced",
+                           source_commit=b, reason="coalesced_into_newer_commit")
+        dc = coalesce.decide(self.root, self.repo_id, c, cli.EMPTY_TREE)
+        self.assertEqual(dc.action, coalesce.RUN)
+        self.assertEqual(dc.rev_range, f"{gitio.resolve(self.root, a + '^')}..{c}")
+        self.assertEqual(set(gitio.changed_files(self.root, dc.rev_range)),
+                         {"src/api.py", "src/b.py", "src/c.py"})
+
+    def test_choobi_own_docs_commit_does_not_coalesce_the_job(self) -> None:
+        docs_commit = _commit(self.root, "docs/api.md", NEW_DOC, "add configurable retry backoff")
+        history.add_record(self.repo_id, str(self.root), "post_commit", "committed",
+                           source_commit=self.head, docs_commit=docs_commit)
+        (self.root / "src/api.py").write_text("def retry(n=4): return n\n")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "later human commit")
+        later = gitio.resolve(self.root, "HEAD")
+        # A job whose only "newer" commit is Choobi's own docs commit still runs.
+        _git(self.root, "reset", "-q", "--hard", docs_commit)
+        d = coalesce.decide(self.root, self.repo_id, self.head, cli.EMPTY_TREE)
+        self.assertEqual((d.action, d.rev_range),
+                         (coalesce.RUN, f"{gitio.resolve(self.root, self.head + '^')}..{self.head}"))
+        _git(self.root, "reset", "-q", "--hard", later)
+        self.assertEqual(coalesce.decide(self.root, self.repo_id, self.head,
+                                         cli.EMPTY_TREE).action, coalesce.COALESCED)
+
+    def test_amended_away_commit_is_unreachable_and_switched_branch_still_runs(self) -> None:
+        _git(self.root, "commit", "-q", "--amend", "-m", "amended")
+        self.assertEqual(coalesce.decide(self.root, self.repo_id, self.head,
+                                         cli.EMPTY_TREE).action, coalesce.UNREACHABLE)
+        # Back on a branch that contains it, but checked out elsewhere: run (the engine parks).
+        _git(self.root, "branch", "-f", "keep", self.head)
+        _git(self.root, "checkout", "-q", "-b", "elsewhere", "HEAD^")
+        self.assertEqual(coalesce.decide(self.root, self.repo_id, self.head,
+                                         cli.EMPTY_TREE).action, coalesce.RUN)
+
+    def test_cli_post_commit_burst_produces_one_docs_commit(self) -> None:
+        b = _commit(self.root, "src/api.py", "def retry(n=3, backoff=2): return n\n", "add backoff")
+        seen = []
+
+        def answer(prompt: str) -> str:
+            seen.append(prompt)
+            return _link() if "## Final response" in prompt else _upd()
+
+        def run(sha: str) -> None:
+            args = cli._build_parser().parse_args(
+                ["update", "--commit", sha, "--trigger", "post_commit"])
+            with mock.patch("choobi.cli.gitio.repo_root", return_value=self.root), \
+                 mock.patch("choobi.cli.config.Config.load", return_value=config.Config()), \
+                 mock.patch("choobi.cli.get_runtime", return_value=FakeRuntime(answer)), \
+                 mock.patch("builtins.print"):
+                self.assertEqual(cli._cmd_update(args, None), 0)
+
+        run(self.head)          # older job wakes up after b exists -> coalesced, no model call
+        self.assertEqual(seen, [])
+        run(b)
+        statuses = [(r["source_commit"], r["status"]) for r in history.recent(self.repo_id)]
+        self.assertEqual(statuses, [(b, "committed"), (self.head, "coalesced")])
+        self.assertIn("def retry(n=3, backoff=2)", seen[0])
+        self.assertIn("-def retry(): pass", seen[0])          # widened back over `head`
+        self.assertEqual(gitio.resolve(self.root, "HEAD^"), b)
+
+    def test_engine_builds_on_the_owning_branch_when_user_already_switched(self) -> None:
+        _git(self.root, "checkout", "-q", "-b", "elsewhere", "HEAD^")
+
+        def answer(prompt: str) -> str:
+            return _link() if "## Final response" in prompt else _upd()
+
+        req = UpdateRequest(source_commit=self.head, rev_range=f"{self.head}^..{self.head}",
+                            trigger="post_commit")
+        result = engine.run_update(self.root, req, config.Config(), FakeRuntime(answer))
+        self.assertEqual(result.status, "parked")
+        self.assertEqual(gitio.resolve(self.root, f"{result.docs_commit}^"), self.head)
+        self.assertIn("elsewhere", result.reason)
+
+
+class StatusTest(HarnessCase):
+    def test_status_lists_parked_commits_with_the_apply_hint(self) -> None:
+        pending = _park(self)
+        repo_id = config.checkout_id(gitio.common_dir(self.root))
+        history.add_record(repo_id, str(self.root), "post_commit", "parked",
+                           source_commit=self.head, docs_commit=pending,
+                           reason="checked-out branch is other")
+        out = status.render(self.root)
+        self.assertIn("choobi apply", out)
+        self.assertIn(self.head[:7], out)
+        self.assertIn("checked-out branch is other", out)
+        report = status.report(self.root)
+        self.assertEqual(report["parked"][0]["pending"], pending)
 
 
 if __name__ == "__main__":

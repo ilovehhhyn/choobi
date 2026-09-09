@@ -87,6 +87,9 @@ li.clickable:focus { outline: 1px solid #000; outline-offset: -1px; }
 #cl-log-list li.no_op::before { content: "·"; }
 #cl-log-list li.flagged::before { content: "!"; }
 #cl-log-list li.failed::before { content: "✕"; }
+#cl-log-list li.parked::before { content: "⧗"; }
+#cl-log-list li.coalesced::before { content: "·"; }
+#cl-log-list li.audit::before { content: "≡"; }
 .detail-path { font-weight: 700; margin-bottom: 10px; }
 .panel label { margin-bottom: 8px; }
 .back { margin-bottom: 8px; }

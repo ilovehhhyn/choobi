@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 from . import config, gitio, history, locking
-from .errors import ChoobiError, PendingDocsUpdate
+from .errors import ChoobiError
 
 ANNOTATION = "choobi updated docs."
 
@@ -39,23 +39,27 @@ def _has_docs_commit(root: Path, base: str, head: str) -> bool:
     return False
 
 
+PENDING_NOTE = ("choobi: a docs update is still running for this branch; its commit will be "
+                "pushed here when it lands.")
+
+
 def create(root: Path) -> str:
-    """Create the PR and, if a docs commit exists, append the annotation. Returns the URL."""
+    """Create the PR and, if a docs commit exists, append the annotation. Returns the URL.
+
+    Never waits on a running update: the docs commit rides the same branch and is pushed to the
+    same PR when it lands, so blocking PR creation would only delay the developer.
+    """
     repo_id = config.checkout_id(gitio.common_dir(root))
-    lock = locking.RepoLock(repo_id)
-    if not lock.acquire():
-        raise PendingDocsUpdate("wait for the active documentation update before creating a PR")
-    try:
-        url = _gh(root, "pr", "create", "--fill")
-        bounds = _gh(root, "pr", "view", "--json", "baseRefOid,headRefOid", "-q",
-                     '.baseRefOid + " " + .headRefOid').split()
-        if len(bounds) != 2:
-            raise ChoobiError("gh returned an invalid PR range")
-        if _has_docs_commit(root, bounds[0], bounds[1]):
-            body = _gh(root, "pr", "view", "--json", "body", "-q", ".body")
-            if ANNOTATION not in body:
-                new_body = (body + "\n\n" + ANNOTATION).strip()
-                _gh(root, "pr", "edit", "--body", new_body)
-        return url
-    finally:
-        lock.release()
+    url = _gh(root, "pr", "create", "--fill")
+    bounds = _gh(root, "pr", "view", "--json", "baseRefOid,headRefOid", "-q",
+                 '.baseRefOid + " " + .headRefOid').split()
+    if len(bounds) != 2:
+        raise ChoobiError("gh returned an invalid PR range")
+    if _has_docs_commit(root, bounds[0], bounds[1]):
+        body = _gh(root, "pr", "view", "--json", "body", "-q", ".body")
+        if ANNOTATION not in body:
+            new_body = (body + "\n\n" + ANNOTATION).strip()
+            _gh(root, "pr", "edit", "--body", new_body)
+    if locking.is_running(repo_id):
+        return f"{url}\n{PENDING_NOTE}"
+    return url

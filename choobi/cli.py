@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import (
-    agent_skill, apply as apply_mod, auth, config, engine, gitio, help as help_mod, history,
-    hooks, locking, pr, status, views,
+    agent_skill, apply as apply_mod, auth, coalesce, config, engine, gitio, help as help_mod,
+    history, hooks, locking, pr, status, views,
 )
 from .errors import ChoobiError, InvalidScope, PendingDocsUpdate, SourceCommitRequired
 from .runtime import get_runtime
@@ -51,7 +51,8 @@ def _build_parser() -> argparse.ArgumentParser:
     cl = sub.add_parser("changelog", add_help=False)
     cl.add_argument("-n", "--limit", type=int, default=30)
     cl.add_argument("--all", action="store_true")
-    cl.add_argument("--status", choices=["committed", "no_op", "flagged", "failed"])
+    cl.add_argument("--status", choices=["committed", "parked", "no_op", "flagged", "failed",
+                                         "coalesced", "audit"])
     sh = sub.add_parser("show", add_help=False)
     sh.add_argument("id", type=int)
     sub.add_parser("style", add_help=False)
@@ -122,13 +123,27 @@ def _cmd_update(args: argparse.Namespace, instruction: Optional[str]) -> int:
     if not lock.acquire(blocking=trigger == "post_commit"):
         raise PendingDocsUpdate("another documentation update is active for this repository")
     try:
+        if trigger == "post_commit" and source_commit and not args.targets:
+            decision = coalesce.decide(root, repo_id, source_commit, EMPTY_TREE)
+            if decision.action == coalesce.UNREACHABLE:
+                history.add_record(repo_id, str(root), trigger, "no_op",
+                                   source_commit=source_commit,
+                                   summary="the commit was amended or rebased away before "
+                                           "choobi reviewed it",
+                                   reason="source_commit_unreachable")
+                return 0
+            if decision.action == coalesce.COALESCED:
+                history.add_record(repo_id, str(root), trigger, "coalesced",
+                                   source_commit=source_commit,
+                                   summary=f"folded into the review of {decision.into[:7]}",
+                                   reason="coalesced_into_newer_commit")
+                return 0
+            req.rev_range = decision.rev_range
         result = engine.run_update_guarded(root, req, cfg, rt)
     finally:
         lock.release()
 
-    if result.status == "committed":
-        print(result.completion_message)
-    elif result.status == "flagged":
+    if result.status in ("committed", "flagged", "parked"):
         print(result.completion_message)
     elif result.status == "gap":
         print("documentation_gap — a doc is warranted but no writable placement exists.")

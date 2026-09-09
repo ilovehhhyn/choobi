@@ -213,3 +213,9 @@ def pending_refs(root: Path) -> Dict[str, str]:
         refname, sha = line.split()
         refs[refname.rsplit("/", 1)[1]] = sha
     return refs
+
+
+def branches_containing(root: Path, sha: str) -> List[str]:
+    """Local branch names whose history contains `sha`."""
+    out = _run(root, "for-each-ref", "--format=%(refname:short)", "--contains", sha, "refs/heads/")
+    return [line.strip() for line in out.splitlines() if line.strip()]

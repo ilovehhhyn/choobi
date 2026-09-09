@@ -1061,15 +1061,19 @@ class HardeningTest(unittest.TestCase):
             with self.assertRaises(PendingDocsUpdate):
                 cli._cmd_update(args, "update it")
 
-    def test_pr_holds_the_update_lock_while_creating(self) -> None:
-        lock = mock.Mock()
-        lock.acquire.return_value = True
-        with mock.patch("choobi.pr.locking.RepoLock", return_value=lock), \
+    def test_pr_does_not_wait_for_a_running_update(self) -> None:
+        # The docs commit rides the same branch and is pushed to the same PR when it lands, so
+        # PR creation proceeds immediately and only notes that an update is still running.
+        with mock.patch("choobi.pr.locking.is_running", return_value=True), \
              mock.patch("choobi.pr._gh", side_effect=["https://example.test/pr/1", "base head"]), \
              mock.patch("choobi.pr._has_docs_commit", return_value=False):
-            self.assertEqual(pr.create(self.root), "https://example.test/pr/1")
-        lock.acquire.assert_called_once_with()
-        lock.release.assert_called_once_with()
+            out = pr.create(self.root)
+        self.assertTrue(out.startswith("https://example.test/pr/1"))
+        self.assertIn(pr.PENDING_NOTE, out)
+        with mock.patch("choobi.pr.locking.is_running", return_value=False), \
+             mock.patch("choobi.pr._gh", side_effect=["https://example.test/pr/2", "base head"]), \
+             mock.patch("choobi.pr._has_docs_commit", return_value=False):
+            self.assertEqual(pr.create(self.root), "https://example.test/pr/2")
 
     def test_help_matches_the_validated_update_scope(self) -> None:
         update = next(c for c in help_mod.COMMANDS if c["command"].startswith("choobi update"))
