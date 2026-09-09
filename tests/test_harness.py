@@ -13,8 +13,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from choobi import baseline, docs, gitio
-from choobi.errors import NotAllowedPath
+from choobi import baseline, docs, gitio, verify
+from choobi.errors import Conflict, NotAllowedPath, VerificationFailed
 
 
 def _git(root: Path, *args: str) -> str:
@@ -156,6 +156,32 @@ class TreeTest(HarnessCase):
             self.root, baseline.policy(), tree=docs.Tree.at(self.root, "HEAD"))}
         self.assertIn("Retries once.", records["docs/api.md"].content)
         self.assertTrue(records["docs/api.md"].writable)
+
+
+class VerifySplitTest(HarnessCase):
+    def test_content_checks_resolve_links_against_the_pinned_tree(self) -> None:
+        (self.root / "docs/guide.md").write_text("# Guide\n")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "guide")
+        (self.root / "docs/guide.md").unlink()          # deleted in the working tree only
+        content = "---\ncovers: src/api.py\n---\n# API\n\nSee [guide](guide.md).\n"
+        old, _ = docs.Tree.at(self.root, "HEAD").read("docs/api.md")
+        verify.check_content(
+            self.root, "docs/api.md", content, is_create=False, old_content=old,
+            policy=baseline.policy(), tree=docs.Tree.at(self.root, "HEAD"),
+        )
+        with self.assertRaises(VerificationFailed):
+            verify.check_content(
+                self.root, "docs/api.md", content, is_create=False, old_content=old,
+                policy=baseline.policy(), tree=docs.Tree.working(self.root),
+            )
+
+    def test_tree_state_checks_are_separate(self) -> None:
+        expected = gitio.file_hash(self.root, "docs/api.md")
+        verify.check_tree_state(self.root, "docs/api.md", is_create=False, expected_hash=expected)
+        (self.root / "docs/api.md").write_text("# dirty\n")
+        with self.assertRaises(Conflict):
+            verify.check_tree_state(self.root, "docs/api.md", is_create=False,
+                                    expected_hash=expected)
 
 
 if __name__ == "__main__":
