@@ -3,7 +3,7 @@ document.querySelectorAll('[data-runtime]').forEach(button=>button.addEventListe
 const tuiPanel = document.querySelector('#tui-panel');
 const tuiInput = document.querySelector('#tui-input');
 const tuiScreens = {
-  about: { lead: 'a little documentation agent for your repository.', detail: 'you write the code. i’ll keep the notes so you never have to think about it.', label: 'read the rest ↓' },
+  about: { lead: 'choobi is a little documentation agent for your repository.', detail: 'you write the code. i’ll keep the notes so you never have to think about it.', label: 'read the rest ↓' },
   workflow: { lead: 'commit → read the diff → update the docs.', detail: 'a separate docs commit follows yours.\nnothing to document? nothing gets changed.', label: 'see the process ↓' },
   install: { lead: 'bring a choobi into your repository.', detail: 'Python 3.9+ · Git · Claude or Codex CLI\nset it up once. then carry on building.', label: 'open setup instructions ↓' }
 };
