@@ -148,7 +148,7 @@ class ChoobiTest(unittest.TestCase):
         r = self._run(UpdateRequest(source_commit=self.head,
                                     rev_range=f"{self.head}^..{self.head}",
                                     trigger="post_commit"), UPDATE_RESP)
-        self.assertEqual(r.status, "committed")
+        self.assertEqual(r.status, "parked")
         self.assertEqual(gitio.commit_subject(self.root, r.docs_commit),
                          "add configurable retry backoff")
         self.assertIn("retry backoff", r.completion_message)
@@ -160,7 +160,7 @@ class ChoobiTest(unittest.TestCase):
         before = gitio.resolve(self.root, "HEAD")
         r2 = self._run(req, UPDATE_RESP)
         self.assertEqual(gitio.resolve(self.root, "HEAD"), before)  # no second commit
-        self.assertEqual(r2.status, "committed")
+        self.assertEqual(r2.status, "parked")
 
     def test_silent_is_no_op(self) -> None:
         r = self._run(UpdateRequest(targets=["docs/api.md"], source_commit=self.head,
@@ -190,7 +190,7 @@ class ChoobiTest(unittest.TestCase):
         result = run_update(
             self.root,
             UpdateRequest(source_commit=head, rev_range=f"{head}^..{head}",
-                          trigger="post_commit"),
+                          trigger="manual"),
             self.cfg, rt,
         )
         self.assertEqual(result.reason, "model_linkage_none_semantic")
@@ -227,7 +227,7 @@ class ChoobiTest(unittest.TestCase):
         result = run_update(
             self.root,
             UpdateRequest(source_commit=head, rev_range=f"{head}^..{head}",
-                          trigger="post_commit"),
+                          trigger="manual"),
             self.cfg, FakeRuntime(answer),
         )
         self.assertEqual(result.status, "committed")

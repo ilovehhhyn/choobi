@@ -47,8 +47,21 @@ CREATE TABLE IF NOT EXISTS repos (
     first_seen  TEXT NOT NULL,
     last_seen   TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS jobs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo_id       TEXT NOT NULL,
+    repo_path     TEXT NOT NULL,
+    source_commit TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    error         TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    UNIQUE(repo_id, source_commit)
+);
 CREATE INDEX IF NOT EXISTS idx_records_repo ON records(repo_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_records_source ON records(repo_id, source_commit);
+CREATE INDEX IF NOT EXISTS idx_jobs_repo_state ON jobs(repo_id, state, id);
 """
 
 _COLUMNS = [

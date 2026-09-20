@@ -844,7 +844,7 @@ class HardeningTest(unittest.TestCase):
         result = engine.run_update(
             self.root,
             engine.UpdateRequest(source_commit=head, rev_range=f"{head}^..{head}",
-                                 trigger="post_commit"),
+                                 trigger="manual"),
             config.Config(onboarded=True), FakeRuntime(answer),
         )
         self.assertEqual(result.status, "committed")
@@ -1091,7 +1091,10 @@ class HardeningTest(unittest.TestCase):
         self.assertIsInstance(get_runtime(config.Config(agent="codex")), CodexCliRuntime)
 
     def test_codex_runtime_is_ephemeral_read_only_and_uses_schema(self) -> None:
-        schema = {"type": "object", "properties": {"action": {"type": "string"}}}
+        schema = {
+            "type": "object", "properties": {"action": {"type": "string"}},
+            "required": ["action"], "additionalProperties": False,
+        }
         captured = {}
 
         def run(command: list, **kwargs: object) -> subprocess.CompletedProcess:

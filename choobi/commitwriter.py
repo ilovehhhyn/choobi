@@ -38,9 +38,12 @@ def pending_ref(source_commit: str) -> str:
     return f"refs/choobi/pending/{source_commit}"
 
 
-def _direct_commit(root: Path, writes: Dict[str, str], message: str) -> str:
+def _direct_commit(
+    root: Path, writes: Dict[str, str], message: str, deletes: Optional[List[str]] = None,
+) -> str:
     """Commit verified clean targets, restoring them if Git refuses the commit."""
-    paths = sorted(writes)
+    deletes = deletes or []
+    paths = sorted(set(writes) | set(deletes))
     targets = {rel: docs.checked_path(root, rel) for rel in paths}
     for rel, path in targets.items():
         if os.path.lexists(path) and not stat.S_ISREG(path.lstat().st_mode):
@@ -50,11 +53,14 @@ def _direct_commit(root: Path, writes: Dict[str, str], message: str) -> str:
     written_hashes = {
         rel: hashlib.sha256(content.encode()).hexdigest() for rel, content in writes.items()
     }
+    written_hashes.update({rel: None for rel in deletes})
     try:
         for rel, content in writes.items():
             p = targets[rel]
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content)
+        for rel in deletes:
+            targets[rel].unlink()
         return gitio.commit_paths(root, paths, message, GENERATING_ENV)
     except (OSError, RuntimeError) as exc:
         cleanup_error = ""
@@ -110,6 +116,7 @@ def _check_expected_at(root: Path, rev: str, expected: Dict[str, Optional[str]])
 
 def _build_pending(
     root: Path, base: str, writes: Dict[str, str], message: str, source_commit: str,
+    deletes: Optional[List[str]] = None,
 ) -> str:
     """Create the docs commit on top of `base` in a throwaway worktree; park it on the ref."""
     ref = pending_ref(source_commit)
@@ -117,7 +124,7 @@ def _build_pending(
         worktree = Path(parent) / "worktree"
         try:
             gitio._run(root, "worktree", "add", "--detach", str(worktree), base)
-            pending = _direct_commit(worktree, writes, message)
+            pending = _direct_commit(worktree, writes, message, deletes)
             gitio._run(root, "update-ref", ref, pending)
         except RuntimeError as exc:
             raise CommitFailed(f"could not build isolated docs commit: {exc}") from exc
@@ -147,7 +154,12 @@ def _cherry_pick(root: Path, pending: str) -> None:
 def _already_landed(root: Path, pending: str, paths: List[str]) -> bool:
     """True when HEAD already holds every path exactly as the pending commit does."""
     head = gitio.ls_tree(root, "HEAD")
+    wanted = gitio.ls_tree(root, pending)
     for path in paths:
+        if path not in wanted:
+            if path in head:
+                return False
+            continue
         if path not in head:
             return False
         try:
@@ -201,6 +213,8 @@ def write_and_commit(
     source_commit: str,
     expected_hashes: Dict[str, Optional[str]],
     source_branch: object = _UNSET,
+    attach: bool = True,
+    deletes: Optional[List[str]] = None,
 ) -> str:
     """Build the docs commit off the source branch tip and attach it if that cannot collide.
 
@@ -209,16 +223,22 @@ def write_and_commit(
     but attaching would have raced the developer. `source_branch` defaults to the checked-out
     branch; pass the branch captured when the job started.
     """
-    if set(expected_hashes) != set(writes):
+    deletes = deletes or []
+    if set(writes) & set(deletes):
+        raise CommitFailed("a documentation path cannot be written and deleted together")
+    if set(expected_hashes) != set(writes) | set(deletes):
         raise CommitFailed("isolated writes require one verified hash per target")
     branch: Optional[str] = (
         gitio.current_branch(root) if source_branch is _UNSET else source_branch  # type: ignore[assignment]
     )
     base = _branch_tip(root, source_commit, branch)
     _check_expected_at(root, base, expected_hashes)
-    paths = sorted(writes)
+    paths = sorted(set(writes) | set(deletes))
 
-    pending = _build_pending(root, base, writes, message, source_commit)
+    pending = _build_pending(root, base, writes, message, source_commit, deletes)
+
+    if not attach:
+        raise Parked(pending, "background updates never modify the active checkout")
 
     why = collision(root, paths, source_branch=branch, base=base)
     if why:

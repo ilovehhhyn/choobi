@@ -66,6 +66,15 @@ def resolve(root: Path, rev: str) -> str:
     return _run(root, "rev-parse", rev).strip()
 
 
+def has_head(root: Path) -> bool:
+    """Whether HEAD resolves to a commit; false for a newly initialized unborn branch."""
+    proc = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD^{commit}"],
+        cwd=str(root), capture_output=True, env=git_env(),
+    )
+    return proc.returncode == 0
+
+
 def commit_message(root: Path, sha: str) -> str:
     """Full raw message (subject + body), byte-preserving via %B."""
     return _run(root, "show", "-s", "--format=%B", sha).rstrip("\n")

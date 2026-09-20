@@ -16,7 +16,42 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from . import config
-from .errors import RuntimeUnavailable
+from .errors import RuntimeContractInvalid, RuntimeUnavailable
+
+
+_CODEX_UNSUPPORTED_SCHEMA_KEYS = {"uniqueItems"}
+
+
+def validate_codex_schema(schema: Dict[str, Any]) -> None:
+    """Validate the strict JSON Schema subset accepted by Codex structured output."""
+    def visit(node: Any, location: str) -> None:
+        if isinstance(node, list):
+            for index, item in enumerate(node):
+                visit(item, f"{location}[{index}]")
+            return
+        if not isinstance(node, dict):
+            return
+        forbidden = _CODEX_UNSUPPORTED_SCHEMA_KEYS & set(node)
+        if forbidden:
+            key = sorted(forbidden)[0]
+            raise RuntimeContractInvalid(f"Codex output schema does not support {key} at {location}")
+        if node.get("type") == "object":
+            properties = node.get("properties")
+            required = node.get("required")
+            if not isinstance(properties, dict):
+                raise RuntimeContractInvalid(f"object schema needs properties at {location}")
+            if set(required or []) != set(properties):
+                raise RuntimeContractInvalid(
+                    f"object schema must require every property at {location}"
+                )
+            if node.get("additionalProperties") is not False:
+                raise RuntimeContractInvalid(
+                    f"object schema must set additionalProperties false at {location}"
+                )
+        for key, value in node.items():
+            visit(value, f"{location}.{key}")
+
+    visit(schema, "$" )
 
 
 class Runtime:
@@ -80,6 +115,9 @@ class CodexCliRuntime(Runtime):
         if not binary:
             raise RuntimeUnavailable("codex CLI not found on PATH")
 
+        if schema:
+            validate_codex_schema(schema)
+
         with tempfile.TemporaryDirectory(prefix="choobi-codex-") as tmp:
             root = Path(tmp)
             output_path = root / "final.txt"
@@ -116,6 +154,8 @@ class CodexCliRuntime(Runtime):
                 raise RuntimeUnavailable(f"codex CLI failed: {exc}") from exc
             if proc.returncode != 0:
                 detail = proc.stderr.strip() or proc.stdout.strip()
+                if "invalid_json_schema" in detail:
+                    raise RuntimeContractInvalid(f"codex rejected Choobi's output schema: {detail}")
                 raise RuntimeUnavailable(f"codex CLI exited {proc.returncode}: {detail}")
             if output_path.exists():
                 return output_path.read_text()

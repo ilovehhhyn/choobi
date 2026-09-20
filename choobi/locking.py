@@ -17,8 +17,8 @@ def _path(repo_id: str) -> Path:
 
 
 class RepoLock:
-    def __init__(self, repo_id: str) -> None:
-        self.path = _path(repo_id)
+    def __init__(self, repo_id: str, filename: str = "update.lock") -> None:
+        self.path = config.repo_dir(repo_id) / filename
         self._f: Optional["open"] = None  # type: ignore[valid-type]
 
     def acquire(self, *, blocking: bool = False) -> bool:

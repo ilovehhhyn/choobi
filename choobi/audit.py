@@ -62,6 +62,17 @@ AUDIT_SCHEMA = {
     "additionalProperties": False,
 }
 
+DISCOVERY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "candidates": {
+            "type": "array", "items": {"type": "string"}, "maxItems": 12,
+        },
+    },
+    "required": ["candidates"],
+    "additionalProperties": False,
+}
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -108,6 +119,97 @@ def _build_prompt(doc: str, content: str, evidence: Dict[str, str], tools: bool)
     return "\n\n".join(parts)
 
 
+def _discovery_prompt(doc: str, content: str, paths: List[str]) -> str:
+    return "\n\n".join([
+        "## Task\nChoose up to 12 repository files whose implementation or configuration is "
+        "most likely to confirm or contradict concrete current-behavior claims in this document. "
+        "Return no candidate for assets, tests, generated output, or unrelated internals.",
+        f"## Document: {doc}\n----- BEGIN DOCUMENT -----\n{content}\n----- END DOCUMENT -----",
+        "## Repository files\n" + "\n".join(f"- {path}" for path in paths),
+        '## Response format\nReturn ONE JSON object: {"candidates":["path"]}',
+    ])
+
+
+def _parse_candidates(raw: str, allowed: "set[str]") -> List[str]:
+    data = engine._extract_json(raw)
+    if set(data) != {"candidates"} or not isinstance(data["candidates"], list):
+        raise RuntimeOutputInvalid("audit discovery needs a candidates array")
+    paths = data["candidates"]
+    if len(paths) > 12 or not all(isinstance(path, str) for path in paths):
+        raise RuntimeOutputInvalid("audit discovery candidates must be at most 12 paths")
+    if len(paths) != len(set(paths)) or not set(paths) <= allowed:
+        raise RuntimeOutputInvalid("audit discovery candidates must be unique repository paths")
+    return paths
+
+
+def _path_batches(doc: str, content: str, paths: List[str]) -> List[List[str]]:
+    """Partition the repository index without truncating the document or any path."""
+    batches: List[List[str]] = []
+    current: List[str] = []
+    for path in paths:
+        trial = [*current, path]
+        if engine._prompt_bytes(_discovery_prompt(doc, content, trial)) <= engine.MAX_PROMPT_BYTES:
+            current = trial
+            continue
+        if current:
+            batches.append(current)
+            current = [path]
+        else:
+            return []
+    if current or not batches:
+        batches.append(current)
+    return batches
+
+
+def _discover_evidence(
+    root: Path, tree: docs.Tree, doc: str, content: str, runtime: Runtime,
+) -> List[str]:
+    source_paths = [
+        path for path in tree.files()
+        if path != doc and docs.is_reviewable_input(path)
+    ]
+    batches = _path_batches(doc, content, source_paths)
+    if not batches:
+        return []
+    selected: List[str] = []
+    for paths in batches:
+        allowed = set(paths)
+        selected.extend(engine._decide(
+            runtime, _discovery_prompt(doc, content, paths), engine.LINKAGE_SYSTEM,
+            DISCOVERY_SCHEMA, lambda raw, a=allowed: _parse_candidates(raw, a),
+            root=root, enable_tools=False, tree=tree,
+        ))
+    return list(dict.fromkeys(selected))[:12]
+
+
+def _evidence_batches(
+    doc: str, content: str, evidence: Dict[str, str], tools: bool,
+) -> Tuple[List[Dict[str, str]], List[str]]:
+    """Fit complete source files into audit calls; return oversized paths separately."""
+    if not evidence:
+        prompt = _build_prompt(doc, content, {}, tools)
+        return ([{}], []) if engine._prompt_bytes(prompt) <= engine.MAX_PROMPT_BYTES else ([], [])
+    batches: List[Dict[str, str]] = []
+    current: Dict[str, str] = {}
+    skipped: List[str] = []
+    for path, text in evidence.items():
+        trial = {**current, path: text}
+        if engine._prompt_bytes(_build_prompt(doc, content, trial, tools)) <= engine.MAX_PROMPT_BYTES:
+            current = trial
+            continue
+        if current:
+            batches.append(current)
+            current = {}
+        single = {path: text}
+        if engine._prompt_bytes(_build_prompt(doc, content, single, tools)) <= engine.MAX_PROMPT_BYTES:
+            current = single
+        else:
+            skipped.append(path)
+    if current:
+        batches.append(current)
+    return batches, skipped
+
+
 def _parse(doc: str, raw: str) -> List[Finding]:
     data = engine._extract_json(raw)
     if set(data) != {"findings"} or not isinstance(data["findings"], list):
@@ -140,22 +242,25 @@ def run_audit(root: Path, cfg: config.Config, runtime: Runtime) -> Tuple[List[Fi
     for doc in sorted(path for path in files if docs.is_allowed(path, policy)):
         content, _ = tree.read(doc)
         evidence_paths = _evidence_for(content, files)
-        if not evidence_paths and not tools:
-            notes.append(f"{doc}: skipped — no covers: entry links it to source "
-                         "(add one, or enable tools so the model can read the repository)")
-            continue
+        if not evidence_paths:
+            evidence_paths = _discover_evidence(root, tree, doc, content, runtime)
         evidence = {path: tree.read(path)[0] for path in evidence_paths}
         verify.check_evidence(policy, content, *evidence.values())
-        prompt = _build_prompt(doc, content, evidence, tools)
-        if engine._prompt_bytes(prompt) > engine.MAX_PROMPT_BYTES:
-            notes.append(f"{doc}: skipped — document plus covered sources exceed the "
+        batches, skipped = _evidence_batches(doc, content, evidence, tools)
+        if not batches:
+            notes.append(f"{doc}: skipped — the document alone exceeds the "
                          f"{engine.MAX_PROMPT_BYTES}-byte prompt ceiling")
             continue
-        findings.extend(engine._decide(
-            runtime, prompt, AUDIT_SYSTEM, AUDIT_SCHEMA, lambda raw, d=doc: _parse(d, raw),
-            root=root, enable_tools=tools, tree=tree,
-        ))
+        for path in skipped:
+            notes.append(f"{doc}: skipped oversized evidence file {path}")
+        for batch in batches:
+            findings.extend(engine._decide(
+                runtime, _build_prompt(doc, content, batch, tools), AUDIT_SYSTEM, AUDIT_SCHEMA,
+                lambda raw, d=doc: _parse(d, raw), root=root, enable_tools=tools, tree=tree,
+            ))
         audited += 1
+
+    findings = list(dict.fromkeys(findings))
 
     report = render_report(findings, notes, audited)
     path = report_path(repo_id)

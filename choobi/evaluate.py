@@ -469,7 +469,7 @@ def run_eval(runtime_for: Callable[[Fixture], Runtime],
                 result = engine.run_update(
                     root,
                     engine.UpdateRequest(source_commit=head, rev_range=f"{head}^..{head}",
-                                         trigger="post_commit"),
+                                         trigger="evaluation"),
                     cfg, runtime_for(fx),
                 )
                 predicted = _predict(root, head, result)

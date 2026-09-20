@@ -97,7 +97,7 @@ UPDATE_SCHEMA = {
         "target": {"type": "string"},
         "summary": {"type": "string"},
         "content": {"type": "string"},
-        "source_paths": {"type": "array", "items": {"type": "string"}, "uniqueItems": True},
+        "source_paths": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["disposition", "target", "summary", "content", "source_paths"],
     "additionalProperties": False,
@@ -114,7 +114,7 @@ LINKAGE_SCHEMA = {
         # handed to the editor so the two stages reason from the same evidence.
         "findings": {"type": "string"},
     },
-    "required": ["action", "doc", "area", "scope"],
+    "required": ["action", "doc", "area", "scope", "findings"],
     "additionalProperties": False,
 }
 
@@ -125,7 +125,7 @@ LINKAGE_BATCH_SCHEMA = {
         "scope": {"type": "string", "enum": ["area", "cross_cutting"]},
         "candidates": {
             "type": "array", "items": {"type": "string"},
-            "uniqueItems": True, "maxItems": 3,
+            "maxItems": 3,
         },
         "create": {"type": "boolean"},
     },
@@ -242,19 +242,19 @@ def _tool_schema(answer_schema: Dict) -> Dict:
             "read_paths": {
                 "type": "array", "items": {"type": "string"}, "maxItems": MAX_TOOL_READS,
             },
-            "answer": answer_schema,
+            "answer": {"anyOf": [answer_schema, {"type": "null"}]},
         },
-        "required": ["step"],
+        "required": ["step", "read_paths", "answer"],
         "additionalProperties": False,
     }
 
 
 _TOOL_SYSTEM_SUFFIX = (
     "\n\nBefore answering you may read tracked repository files as evidence. To read, return "
-    '{"step":"read","read_paths":["<repo-relative path>", ...]} and the verified contents are '
+    '{"step":"read","read_paths":["<repo-relative path>", ...],"answer":null} and the verified contents are '
     "appended for your next turn. You may only read files already tracked in this repository; "
     "nothing outside it exists. Never invent file contents — read them. When you have enough "
-    'evidence, return {"step":"answer","answer":{...}} where answer is exactly the required '
+    'evidence, return {"step":"answer","read_paths":[],"answer":{...}} where answer is exactly the required '
     "object. Reading is optional; answer directly when the evidence already suffices."
 )
 
@@ -1215,6 +1215,7 @@ def run_update(root: Path, req: UpdateRequest, cfg: config.Config, runtime: Runt
             source_commit=req.source_commit or head,
             expected_hashes={target: expected_hash},
             source_branch=source_branch,
+            attach=req.trigger != "post_commit",
         )
     except Parked as parked:
         # Verified and built; only landing is deferred so the developer's checkout stays theirs.

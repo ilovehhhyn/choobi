@@ -76,6 +76,12 @@ COMMANDS: List[Command] = [
                "contradicts, plus claims it cannot verify. Writes nothing to the repository; the "
                "report is printed and saved under ~/.choobi/repos/<id>/audit.md. Run it once when "
                "introducing choobi to a repository with existing documentation."},
+    {"command": "choobi reconcile [--apply]",
+     "summary": "plan or apply bounded documentation consolidation and relocation",
+     "detail": "Without --apply, inspects complete writable documents in bounded batches and "
+               "saves a read-only plan with at most five consolidation or relocation actions. "
+               "With --apply, verifies the repository is still at the planned commit, repairs "
+               "relative links, and commits the complete changeset atomically."},
     {"command": "choobi help [COMMAND]",
      "summary": "this command reference",
      "detail": "Shows all commands, or details for one."},

@@ -15,7 +15,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from choobi import apply as apply_mod, audit, baseline, cli, coalesce, commitwriter, config, docs, engine, gitio, history, hooks, pushing, status, verify
+from choobi import (
+    apply as apply_mod, audit, baseline, cli, coalesce, commitwriter, config, docs, engine,
+    errors, gitio, history, hooks, pushing, runtime as runtime_mod, status, verify,
+)
 from choobi.engine import UpdateRequest
 from choobi.errors import Conflict, NotAllowedPath, Parked, PushRejected, RuntimeUnavailable, VerificationFailed
 from choobi.runtime import FakeRuntime
@@ -420,9 +423,19 @@ class EngineTest(HarnessCase):
         self.cfg = config.Config(name="t", onboarded=True)
         self.repo_id = config.checkout_id(gitio.common_dir(self.root))
 
-    def _anchored(self, sha: "str | None" = None, trigger: str = "post_commit") -> UpdateRequest:
+    def _anchored(self, sha: "str | None" = None, trigger: str = "manual") -> UpdateRequest:
         sha = sha or self.head
         return UpdateRequest(source_commit=sha, rev_range=f"{sha}^..{sha}", trigger=trigger)
+
+    def test_background_update_always_parks_without_moving_the_checkout(self) -> None:
+        result = engine.run_update(
+            self.root, self._anchored(trigger="post_commit"), self.cfg,
+            FakeRuntime([_link(), _upd()])
+        )
+        self.assertEqual(result.status, "parked")
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), self.head)
+        self.assertIn("Retries once.", (self.root / "docs/api.md").read_text())
+        self.assertEqual(gitio.pending_refs(self.root), {self.head: result.docs_commit})
 
     def test_anchored_run_reads_evidence_from_git_objects_not_the_working_tree(self) -> None:
         (self.root / "src/api.py").write_text("def retry(n=99): return 'UNCOMMITTED_SENTINEL'\n")
@@ -525,6 +538,20 @@ class EngineTest(HarnessCase):
                                           FakeRuntime(answer))
         self.assertEqual(history.recent(self.repo_id, limit=1)[0]["reason"],
                          "runtime_unavailable")
+
+    def test_runtime_contract_error_is_not_retried(self) -> None:
+        attempts = []
+
+        def answer(prompt: str) -> str:
+            attempts.append(prompt)
+            raise errors.RuntimeContractInvalid("invalid_json_schema")
+
+        with mock.patch("choobi.engine.time.sleep") as sleep:
+            with self.assertRaises(errors.RuntimeContractInvalid):
+                engine.run_update_guarded(self.root, self._anchored(), self.cfg,
+                                          FakeRuntime(answer))
+        self.assertEqual(len(attempts), 1)
+        sleep.assert_not_called()
 
     def test_unexpected_exception_is_recorded_before_it_propagates(self) -> None:
         with mock.patch("choobi.engine._collect_diff", side_effect=OSError("disk gone")):
@@ -669,6 +696,54 @@ def _commit(root: Path, path: str, content: str, msg: str) -> str:
     return gitio.resolve(root, "HEAD")
 
 
+class RuntimeContractTest(unittest.TestCase):
+    def test_every_codex_schema_uses_the_supported_strict_subset(self) -> None:
+        from choobi import reconcile
+
+        schemas = [
+            engine.UPDATE_SCHEMA,
+            engine.LINKAGE_SCHEMA,
+            engine.LINKAGE_BATCH_SCHEMA,
+            engine.CREATION_REVIEW_SCHEMA,
+            audit.AUDIT_SCHEMA,
+            engine._tool_schema(engine.UPDATE_SCHEMA),
+            reconcile.PLAN_SCHEMA,
+            reconcile.MERGE_SCHEMA,
+        ]
+        for schema in schemas:
+            runtime_mod.validate_codex_schema(schema)
+
+    def test_codex_rejects_an_invalid_schema_before_spawning(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"paths": {
+                "type": "array", "items": {"type": "string"}, "uniqueItems": True,
+            }},
+            "required": ["paths"],
+            "additionalProperties": False,
+        }
+        with mock.patch("choobi.runtime.subprocess.run") as run:
+            with self.assertRaises(errors.RuntimeContractInvalid):
+                runtime_mod.CodexCliRuntime().complete("prompt", schema=schema)
+        run.assert_not_called()
+
+
+class UnbornRepositoryTest(unittest.TestCase):
+    def test_update_requires_an_initial_commit_with_a_targeted_error(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="choobi-unborn-") as tmp:
+            root = Path(tmp)
+            _git(root, "init", "-q", "-b", "main")
+            (root / "README.md").write_text("# New repository\n")
+            args = cli._build_parser().parse_args(
+                ["update", "README.md", "--working", "--detached"]
+            )
+            with mock.patch("choobi.cli.gitio.repo_root", return_value=root), \
+                 mock.patch("choobi.cli.config.Config.load", return_value=config.Config()), \
+                 mock.patch("choobi.cli.get_runtime", return_value=FakeRuntime("unused")):
+                with self.assertRaises(errors.InitialCommitRequired):
+                    cli._cmd_update(args, "document installation")
+
+
 class CoalesceTest(HarnessCase):
     def setUp(self) -> None:
         super().setUp()
@@ -739,10 +814,10 @@ class CoalesceTest(HarnessCase):
         self.assertEqual(seen, [])
         run(b)
         statuses = [(r["source_commit"], r["status"]) for r in history.recent(self.repo_id)]
-        self.assertEqual(statuses, [(b, "committed"), (self.head, "coalesced")])
+        self.assertEqual(statuses, [(b, "parked"), (self.head, "coalesced")])
         self.assertIn("def retry(n=3, backoff=2)", seen[0])
         self.assertIn("-def retry(): pass", seen[0])          # widened back over `head`
-        self.assertEqual(gitio.resolve(self.root, "HEAD^"), b)
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), b)
 
     def test_engine_builds_on_the_owning_branch_when_user_already_switched(self) -> None:
         _git(self.root, "checkout", "-q", "-b", "elsewhere", "HEAD^")
@@ -755,7 +830,42 @@ class CoalesceTest(HarnessCase):
         result = engine.run_update(self.root, req, config.Config(), FakeRuntime(answer))
         self.assertEqual(result.status, "parked")
         self.assertEqual(gitio.resolve(self.root, f"{result.docs_commit}^"), self.head)
-        self.assertIn("elsewhere", result.reason)
+        self.assertIn("background updates never modify", result.reason)
+
+
+class DurableJobTest(HarnessCase):
+    def test_duplicate_commit_events_create_one_durable_job(self) -> None:
+        from choobi import jobs
+
+        first = jobs.enqueue(self.root, self.head)
+        second = jobs.enqueue(self.root, self.head)
+        self.assertEqual(first, second)
+        queued = jobs.list_jobs(config.checkout_id(gitio.common_dir(self.root)))
+        self.assertEqual([(job.source_commit, job.state) for job in queued],
+                         [(self.head, jobs.QUEUED)])
+
+    def test_running_job_is_recovered_after_a_worker_crash(self) -> None:
+        from choobi import jobs
+
+        repo_id = config.checkout_id(gitio.common_dir(self.root))
+        job_id = jobs.enqueue(self.root, self.head)
+        claimed = jobs.claim_next(repo_id)
+        self.assertEqual((claimed.id, claimed.state, claimed.attempts),
+                         (job_id, jobs.RUNNING, 1))
+
+        jobs.recover_running(repo_id)
+        claimed_again = jobs.claim_next(repo_id)
+        self.assertEqual((claimed_again.id, claimed_again.state, claimed_again.attempts),
+                         (job_id, jobs.RUNNING, 2))
+
+    def test_hook_persists_the_event_before_starting_the_worker(self) -> None:
+        hooks.install(self.root)
+        script = (self.root / ".git/hooks/post-commit").read_text()
+        enqueue = 'enqueue --commit "$SHA"'
+        self.assertIn(enqueue, script)
+        self.assertIn("drain", script)
+        self.assertLess(script.index(enqueue), script.index("drain"))
+        self.assertNotIn(f"( {config.invocation()} {enqueue}", script)
 
 
 class StatusTest(HarnessCase):
@@ -774,11 +884,58 @@ class StatusTest(HarnessCase):
 
 
 class AuditTest(HarnessCase):
+    def test_audit_discovers_evidence_for_a_document_without_covers(self) -> None:
+        responses = [
+            json.dumps({"candidates": ["src/api.py"]}),
+            json.dumps({"findings": [{
+                "claim": "demo retries once",
+                "status": "contradicted",
+                "evidence": "src/api.py:1 retry(n=3) defaults to three attempts",
+            }]}),
+            json.dumps({"findings": []}),
+        ]
+        findings, notes = audit.run_audit(
+            self.root, config.Config(), FakeRuntime(responses)
+        )
+        self.assertEqual(notes, [])
+        self.assertEqual(findings[0].doc, "README.md")
+        self.assertIn("src/api.py", findings[0].evidence)
+
+    def test_audit_batches_complete_evidence_instead_of_skipping_the_document(self) -> None:
+        original_limit = engine.MAX_PROMPT_BYTES
+        source = "x = '" + ("a" * 1800) + "'\n"
+        (self.root / "src/a.py").write_text(source)
+        (self.root / "src/b.py").write_text(source.replace("a", "b"))
+        (self.root / "docs/api.md").write_text(
+            "---\ncovers: [src/a.py, src/b.py]\n---\n# API\n\nBoth values are stable.\n"
+        )
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "large evidence")
+        prompts = []
+
+        def answer(prompt: str) -> str:
+            prompts.append(prompt)
+            if "Choose up to 12 repository files" in prompt:
+                return json.dumps({"candidates": []})
+            return json.dumps({"findings": []})
+
+        with mock.patch.object(engine, "MAX_PROMPT_BYTES", 3000):
+            _, notes = audit.run_audit(self.root, config.Config(), FakeRuntime(answer))
+        audit_prompts = [p for p in prompts if "docs/api.md" in p]
+        self.assertEqual(notes, [])
+        self.assertEqual(len(audit_prompts), 2)
+        self.assertTrue(all(len(p.encode()) <= 3000 for p in audit_prompts))
+        self.assertTrue(any("src/a.py" in p for p in audit_prompts))
+        self.assertTrue(any("src/b.py" in p for p in audit_prompts))
+
     def test_audit_reports_contradicted_claims_and_writes_nothing_to_the_repo(self) -> None:
         prompts = []
 
         def answer(prompt: str) -> str:
             prompts.append(prompt)
+            if "Choose up to 12 repository files" in prompt:
+                return json.dumps({"candidates": []})
+            if "Document under audit: README.md" in prompt:
+                return json.dumps({"findings": []})
             self.assertIn("Retries once.", prompt)
             self.assertIn("def retry(n=3)", prompt)
             return json.dumps({"findings": [
@@ -789,46 +946,162 @@ class AuditTest(HarnessCase):
             ]})
 
         findings, notes = audit.run_audit(self.root, config.Config(), FakeRuntime(answer))
-        self.assertEqual(len(prompts), 1)                       # README.md has no covers: entry
+        self.assertEqual(len(prompts), 3)
         self.assertEqual([f.status for f in findings], ["contradicted", "unverified"])
         self.assertEqual(findings[0].doc, "docs/api.md")
-        self.assertEqual(len(notes), 1)
-        self.assertIn("README.md: skipped", notes[0])
+        self.assertEqual(notes, [])
         self.assertEqual(_git(self.root, "status", "--porcelain"), "")
         self.assertEqual(gitio.resolve(self.root, "HEAD"), self.head)
         repo_id = config.checkout_id(gitio.common_dir(self.root))
         report = audit.report_path(repo_id).read_text()
         self.assertIn("## Contradicted", report)
         self.assertIn("**Retries once.**", report)
-        self.assertIn("## Skipped", report)
+        self.assertNotIn("## Skipped", report)
         record = history.recent(repo_id, limit=1)[0]
         self.assertEqual(record["status"], "audit")
-        self.assertIn("1 contradicted, 1 unverified, 1 skipped", record["summary"])
+        self.assertIn("1 contradicted, 1 unverified, 0 skipped", record["summary"])
 
     def test_audit_rejects_malformed_findings_then_accepts_a_corrected_answer(self) -> None:
-        calls = {"n": 0}
+        calls = {"audit": 0}
 
         def answer(prompt: str) -> str:
-            calls["n"] += 1
-            if calls["n"] == 1:
+            if "Choose up to 12 repository files" in prompt:
+                return json.dumps({"candidates": []})
+            calls["audit"] += 1
+            if calls["audit"] == 1:
                 return json.dumps({"findings": [{"claim": "x", "status": "wrong"}]})
-            self.assertIn("Previous answer was rejected", prompt)
+            if calls["audit"] == 2:
+                self.assertIn("Previous answer was rejected", prompt)
             return json.dumps({"findings": []})
 
         findings, _ = audit.run_audit(self.root, config.Config(), FakeRuntime(answer))
         self.assertEqual(findings, [])
-        self.assertEqual(calls["n"], 2)
+        self.assertEqual(calls["audit"], 3)
 
     def test_cli_audit_prints_the_report(self) -> None:
         with mock.patch("choobi.cli.gitio.repo_root", return_value=self.root), \
              mock.patch("choobi.cli.config.Config.load", return_value=config.Config()), \
-             mock.patch("choobi.cli.get_runtime",
-                        return_value=FakeRuntime(json.dumps({"findings": []}))), \
+             mock.patch("choobi.cli.get_runtime", return_value=FakeRuntime(
+                 lambda prompt: json.dumps({"candidates": []})
+                 if "Choose up to 12 repository files" in prompt
+                 else json.dumps({"findings": []})
+             )), \
              mock.patch("builtins.print") as printed:
             self.assertEqual(cli.main(["audit"]), 0)
         text = "\n".join(str(c.args[0]) for c in printed.call_args_list)
         self.assertIn("# choobi audit", text)
         self.assertIn("report saved to", text)
+
+
+class ReconcileTest(HarnessCase):
+    def _add_duplicate_docs(self) -> None:
+        (self.root / "docs/old-a.md").write_text("# Retry guide\n\nRetries default to three.\n")
+        (self.root / "docs/old-b.md").write_text("# Retries\n\nThe default is three retries.\n")
+        (self.root / "README.md").write_text(
+            "# demo\n\nSee [the old retry page](docs/old-b.md).\n"
+        )
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "duplicate docs")
+        self.head = gitio.resolve(self.root, "HEAD")
+
+    def test_reconciliation_plan_is_bounded_and_read_only(self) -> None:
+        from choobi import reconcile
+
+        self._add_duplicate_docs()
+
+        def answer(prompt: str) -> str:
+            if "Draft the canonical merged document" in prompt:
+                return json.dumps({"content": "# Retry guide\n\nRetries default to three.\n"})
+            return json.dumps({"actions": [{
+                "kind": "consolidate",
+                "sources": ["docs/old-a.md", "docs/old-b.md"],
+                "target": "docs/retry.md",
+                "reason": "the two pages explain the same retry contract",
+            }]})
+
+        plan = reconcile.propose(self.root, config.Config(), FakeRuntime(answer))
+        self.assertLessEqual(len(plan.actions), reconcile.MAX_ACTIONS)
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), self.head)
+        self.assertTrue((self.root / "docs/old-a.md").exists())
+        self.assertTrue((self.root / "docs/old-b.md").exists())
+        self.assertEqual(set(plan.deletes), {"docs/old-a.md", "docs/old-b.md"})
+        self.assertIn("docs/retry.md", plan.writes)
+        self.assertTrue(reconcile.plan_path(
+            config.checkout_id(gitio.common_dir(self.root))).exists())
+
+    def test_apply_consolidates_atomically_and_repairs_incoming_links(self) -> None:
+        from choobi import reconcile
+
+        self._add_duplicate_docs()
+
+        def answer(prompt: str) -> str:
+            if "Draft the canonical merged document" in prompt:
+                return json.dumps({"content": "# Retry guide\n\nRetries default to three.\n"})
+            return json.dumps({"actions": [{
+                "kind": "consolidate",
+                "sources": ["docs/old-a.md", "docs/old-b.md"],
+                "target": "docs/retry.md",
+                "reason": "duplicate retry pages",
+            }]})
+
+        plan = reconcile.propose(self.root, config.Config(), FakeRuntime(answer))
+        commit = reconcile.apply(self.root, plan)
+        self.assertEqual(commit, gitio.resolve(self.root, "HEAD"))
+        self.assertFalse((self.root / "docs/old-a.md").exists())
+        self.assertFalse((self.root / "docs/old-b.md").exists())
+        self.assertTrue((self.root / "docs/retry.md").exists())
+        self.assertIn("docs/retry.md", (self.root / "README.md").read_text())
+        changed = set(_git(
+            self.root, "diff", "--name-only", "--no-renames", f"{commit}^..{commit}"
+        ).splitlines())
+        self.assertEqual(changed, {
+            "README.md", "docs/old-a.md", "docs/old-b.md", "docs/retry.md",
+        })
+
+    def test_apply_relocates_a_document_and_rebases_its_relative_links(self) -> None:
+        from choobi import reconcile
+
+        (self.root / "docs/assets").mkdir()
+        (self.root / "docs/assets/example.md").write_text("# Example\n")
+        (self.root / "docs/old.md").write_text("# Guide\n\n[Example](assets/example.md)\n")
+        (self.root / "README.md").write_text("# demo\n\n[Guide](docs/old.md)\n")
+        _git(self.root, "add", "-A"); _git(self.root, "commit", "-qm", "misplaced guide")
+        self.head = gitio.resolve(self.root, "HEAD")
+
+        response = json.dumps({"actions": [{
+            "kind": "relocate", "sources": ["docs/old.md"],
+            "target": "docs/guides/guide.md", "reason": "put the guide with guides",
+        }]})
+        plan = reconcile.propose(self.root, config.Config(), FakeRuntime(response))
+        reconcile.apply(self.root, plan)
+        self.assertIn("docs/guides/guide.md", (self.root / "README.md").read_text())
+        moved = (self.root / "docs/guides/guide.md").read_text()
+        self.assertIn("../assets/example.md", moved)
+        self.assertFalse((self.root / "docs/old.md").exists())
+
+    def test_cli_reconcile_plans_then_explicitly_applies(self) -> None:
+        from choobi import reconcile
+
+        self._add_duplicate_docs()
+        responses = [
+            json.dumps({"actions": [{
+                "kind": "consolidate", "sources": ["docs/old-a.md", "docs/old-b.md"],
+                "target": "docs/retry.md", "reason": "duplicate retry pages",
+            }]}),
+            json.dumps({"content": "# Retry guide\n\nRetries default to three.\n"}),
+        ]
+        with mock.patch("choobi.cli.gitio.repo_root", return_value=self.root), \
+             mock.patch("choobi.cli.config.Config.load", return_value=config.Config()), \
+             mock.patch("choobi.cli.get_runtime", return_value=FakeRuntime(responses)), \
+             mock.patch("builtins.print"):
+            self.assertEqual(cli.main(["reconcile"]), 0)
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), self.head)
+
+        with mock.patch("choobi.cli.gitio.repo_root", return_value=self.root), \
+             mock.patch("builtins.print"):
+            self.assertEqual(cli.main(["reconcile", "--apply"]), 0)
+        self.assertNotEqual(gitio.resolve(self.root, "HEAD"), self.head)
+        self.assertFalse(reconcile.plan_path(
+            config.checkout_id(gitio.common_dir(self.root))).exists())
 
 
 class HookEndToEndTest(HarnessCase):
@@ -853,7 +1126,7 @@ class HookEndToEndTest(HarnessCase):
             time.sleep(0.25)
         return False
 
-    def test_commit_and_push_carries_the_docs_commit_to_the_same_branch(self) -> None:
+    def test_commit_and_push_leaves_a_parked_docs_commit_until_apply(self) -> None:
         add_remote(self.root, self.remote)
         _git(self.root, "push", "-q", "-u", "origin", "main")
         hooks.install(self.root)
@@ -867,23 +1140,21 @@ class HookEndToEndTest(HarnessCase):
         subprocess.run(["git", "push", "-q"], cwd=self.root, check=True, env=env,
                        capture_output=True)                       # the developer pushes at once
 
-        landed = self._wait_for(lambda: gitio.resolve(self.root, "HEAD") != source)
-        self.assertTrue(landed, (Path(self._home.name) / "logs/hook.log").read_text())
-        docs_commit = gitio.resolve(self.root, "HEAD")
-        self.assertEqual(gitio.resolve(self.root, "HEAD^"), source)
-        self.assertEqual(gitio.commit_subject(self.root, docs_commit), "add retry jitter")
-        self.assertEqual((self.root / "docs/api.md").read_text(), NEW_DOC)
-        self.assertEqual(_git(self.root, "status", "--porcelain", "--", "docs", "src"), "")
-        # Choobi pushed its commit because the developer had already pushed the source commit.
-        self.assertTrue(self._wait_for(
-            lambda: _git(self.remote, "rev-parse", "main") == docs_commit))
-        # The docs commit's own hook exited (CHOOBI_GENERATING); exactly one background run.
         repo_id = config.checkout_id(gitio.common_dir(self.root))
+        parked = self._wait_for(lambda: bool(gitio.pending_refs(self.root)))
+        self.assertTrue(parked, (Path(self._home.name) / "logs/hook.log").read_text())
+        self.assertEqual(gitio.resolve(self.root, "HEAD"), source)
+        docs_commit = next(iter(gitio.pending_refs(self.root).values()))
+        self.assertEqual(gitio.commit_subject(self.root, docs_commit), "add retry jitter")
+        self.assertIn("Retries once.", (self.root / "docs/api.md").read_text())
+        self.assertEqual(_git(self.root, "status", "--porcelain", "--", "docs", "src"), "")
+        self.assertEqual(_git(self.remote, "rev-parse", "main"), source)
         self.assertTrue(self._wait_for(lambda: len(history.recent(repo_id)) >= 1))
-        time.sleep(1.0)
-        records = history.recent(repo_id)
-        self.assertEqual([r["status"] for r in records], ["committed"])
-        self.assertEqual(records[0]["push"], pushing.PUSHED)
+        self.assertEqual(history.recent(repo_id)[0]["status"], "parked")
+
+        outcomes = apply_mod.apply_pending(self.root, config.Config())
+        self.assertEqual(outcomes[0].status, "landed")
+        self.assertEqual((self.root / "docs/api.md").read_text(), NEW_DOC)
 
     def test_commit_while_editing_the_doc_parks_instead_of_touching_it(self) -> None:
         hooks.install(self.root)

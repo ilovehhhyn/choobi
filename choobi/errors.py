@@ -20,6 +20,10 @@ class SourceCommitRequired(ChoobiError):
     reason = "source_commit_required"
 
 
+class InitialCommitRequired(ChoobiError):
+    reason = "initial_commit_required"
+
+
 class InvalidScope(ChoobiError):
     reason = "invalid_scope"
 
@@ -28,6 +32,12 @@ class RuntimeUnavailable(ChoobiError):
     """The configured runtime could not be reached. We never select a different one."""
 
     reason = "runtime_unavailable"
+
+
+class RuntimeContractInvalid(ChoobiError):
+    """The runtime rejected Choobi's request shape; retrying cannot repair it."""
+
+    reason = "runtime_contract_invalid"
 
 
 class RuntimeOutputInvalid(ChoobiError):

@@ -6,15 +6,19 @@ before argparse ever sees it, so options and instruction never collide.
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional
 
 from . import (
     agent_skill, apply as apply_mod, audit, auth, coalesce, config, engine, gitio,
-    help as help_mod, history, hooks, locking, pr, status, views,
+    help as help_mod, history, hooks, jobs, locking, pr, reconcile, status, views,
 )
-from .errors import ChoobiError, InvalidScope, PendingDocsUpdate, SourceCommitRequired
+from .errors import (
+    ChoobiError, InitialCommitRequired, InvalidScope, PendingDocsUpdate, SourceCommitRequired,
+)
 from .runtime import get_runtime
 
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -65,6 +69,11 @@ def _build_parser() -> argparse.ArgumentParser:
     prp.add_argument("pr_cmd", choices=["create"])
     sub.add_parser("apply", add_help=False)
     sub.add_parser("audit", add_help=False)
+    enqueue = sub.add_parser("enqueue", add_help=False)
+    enqueue.add_argument("--commit", required=True)
+    sub.add_parser("drain", add_help=False)
+    reconcile_parser = sub.add_parser("reconcile", add_help=False)
+    reconcile_parser.add_argument("--apply", action="store_true")
     return p
 
 
@@ -88,6 +97,10 @@ def _validate_update_args(args: argparse.Namespace) -> None:
 def _cmd_update(args: argparse.Namespace, instruction: Optional[str]) -> int:
     _validate_update_args(args)
     root = gitio.repo_root(Path.cwd())
+    if not gitio.has_head(root):
+        raise InitialCommitRequired(
+            "create the repository's initial commit before running choobi update"
+        )
     cfg = config.Config.load()
     rt = get_runtime(cfg)
 
@@ -164,6 +177,65 @@ def _cmd_apply() -> int:
     finally:
         lock.release()
     return 0
+
+
+def _cmd_enqueue(source_commit: str) -> int:
+    root = gitio.repo_root(Path.cwd())
+    jobs.enqueue(root, gitio.resolve(root, source_commit))
+    return 0
+
+
+def _cmd_drain() -> int:
+    """Drain persisted post-commit events; one disposable worker per repository."""
+    root = gitio.repo_root(Path.cwd())
+    repo_id = config.checkout_id(gitio.common_dir(root))
+    worker_lock = locking.RepoLock(repo_id, "jobs.lock")
+    if not worker_lock.acquire():
+        return 0
+    try:
+        jobs.recover_running(repo_id)
+        while True:
+            job = jobs.claim_next(repo_id)
+            if job is None:
+                return 0
+            command = [
+                sys.executable, "-m", "choobi", "update", "--commit", job.source_commit,
+                "--trigger", "post_commit",
+            ]
+            proc = subprocess.run(
+                command, cwd=job.repo_path, capture_output=True, text=True,
+                env={**os.environ, "CHOOBI_GENERATING": ""},
+            )
+            if proc.stdout:
+                print(proc.stdout.rstrip())
+            if proc.stderr:
+                print(proc.stderr.rstrip(), file=sys.stderr)
+            jobs.finish(
+                job.id, jobs.SUCCEEDED if proc.returncode == 0 else jobs.FAILED,
+                "" if proc.returncode == 0 else (proc.stderr.strip() or proc.stdout.strip()),
+            )
+    finally:
+        worker_lock.release()
+
+
+def _cmd_reconcile(apply_plan: bool) -> int:
+    root = gitio.repo_root(Path.cwd())
+    repo_id = config.checkout_id(gitio.common_dir(root))
+    lock = locking.RepoLock(repo_id)
+    if not lock.acquire():
+        raise PendingDocsUpdate("another documentation operation is active for this repository")
+    try:
+        if apply_plan:
+            plan = reconcile.load(repo_id)
+            commit = reconcile.apply(root, plan)
+            reconcile.plan_path(repo_id).unlink()
+            print(f"applied reconciliation plan in {commit[:7]}")
+            return 0
+        cfg = config.Config.load()
+        print(reconcile.render(reconcile.propose(root, cfg, get_runtime(cfg))))
+        return 0
+    finally:
+        lock.release()
 
 
 def _cmd_changelog(args: argparse.Namespace) -> int:
@@ -265,6 +337,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(audit.render_report(findings, notes, audited).rstrip("\n"))
             print(f"\nreport saved to {audit.report_path(config.checkout_id(gitio.common_dir(root)))}")
             return 0
+        if args.cmd == "enqueue":
+            return _cmd_enqueue(args.commit)
+        if args.cmd == "drain":
+            return _cmd_drain()
+        if args.cmd == "reconcile":
+            return _cmd_reconcile(args.apply)
     except ChoobiError as exc:
         print(f"{status.FAILED}   ({exc.reason}): {exc.message}", file=sys.stderr)
         return 1

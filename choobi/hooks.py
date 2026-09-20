@@ -46,14 +46,16 @@ def install(root: Path) -> List[str]:
     script = (
         "#!/bin/sh\n"
         f"{_MANAGED_MARKER}\n"
-        "# choobi post-commit hook — returns immediately, runs the engine in the background.\n"
+        "# choobi post-commit hook — persists work, then starts a disposable queue worker.\n"
         'if [ -n "$CHOOBI_GENERATING" ]; then exit 0; fi\n'
         f"{_exports()}"
         "SHA=$(git rev-parse HEAD)\n"
         # git exports GIT_DIR / GIT_INDEX_FILE (relative) into hooks; the detached job must not
         # inherit them or every git call outside this directory resolves them wrongly.
         "unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR\n"
-        f'( {config.invocation()} update --commit "$SHA" --trigger post_commit '
+        f'{config.invocation()} enqueue --commit "$SHA" '
+        f'>> {shlex.quote(str(log / "hook.log"))} 2>&1 || exit 0\n'
+        f'( {config.invocation()} drain '
         f'>> {shlex.quote(str(log / "hook.log"))} 2>&1 & ) >/dev/null 2>&1\n'
         "exit 0\n"
     )
