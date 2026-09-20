@@ -17,5 +17,5 @@
 /* Full-screen dark opening; the document below stays white. */
 .desktop{background:#000;color:#eee}.tui{background:transparent;color:#eee}.tui-divider{color:#929292}.tui-muted{color:#eee}.tui-nav button{color:#aaa}.tui-nav button[aria-pressed=true],.tui-nav button:hover{color:#fff}.tui-command input{color:#fff}.tui-command input::placeholder{color:#929292}.tui-command input:focus{border-bottom-color:#aaa}.tui-command button{color:#ddd}.tui-status{color:#999}.desktop .scroll-cue,.desktop-note{color:#999}.tui a:focus-visible,.tui button:focus-visible{outline-color:#fff}.nav .brand{background:transparent;color:#fff}.nav nav a{background:transparent;color:#bbb}.nav nav a:hover{background:#222;color:#fff}.nav .nav-install{background:#eee;color:#111}.nav .nav-install:hover{background:#fff;color:#000}.tui-panel{min-height:208px}
 
-/* Light Helvetica for the editorial text; terminals remain monospace. */
-body{font-weight:300}.statement h2,.workflow h2,.boundaries h2,.install h2{font-family:var(--sans);font-weight:300;letter-spacing:-.055em}.steps h3,.rules h3{font-weight:300}.nav .brand{font-weight:300}
+/* Bold Helvetica for the editorial text; terminals remain monospace. */
+body{font-weight:500}.statement h2,.workflow h2,.boundaries h2,.install h2{font-family:var(--sans);font-weight:900;letter-spacing:-.055em}.steps h3,.rules h3{font-weight:700}.nav .brand{font-weight:900}.nav{font-weight:700}
