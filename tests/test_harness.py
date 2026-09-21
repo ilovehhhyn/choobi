@@ -460,7 +460,8 @@ class EngineTest(HarnessCase):
             _git(self.root, "checkout", "-q", "-b", "other", "HEAD^")   # user wandered off
             return _upd()
 
-        result = engine.run_update(self.root, self._anchored(), self.cfg, FakeRuntime(answer))
+        request = self._anchored(trigger="post_commit")
+        result = engine.run_update(self.root, request, self.cfg, FakeRuntime(answer))
         self.assertEqual(result.status, "parked")
         self.assertIn("choobi apply", result.completion_message)
         record = history.recent(self.repo_id, limit=1)[0]
@@ -469,7 +470,7 @@ class EngineTest(HarnessCase):
         self.assertIn("+Retries up to n times", record["patch"])
         self.assertEqual(gitio.resolve(self.root, "main"), self.head)
         # Idempotent: the hook re-firing for the same commit does nothing new.
-        again = engine.run_update(self.root, self._anchored(), self.cfg,
+        again = engine.run_update(self.root, request, self.cfg,
                                   FakeRuntime("MUST NOT BE CALLED"))
         self.assertEqual(again.status, "parked")
 
