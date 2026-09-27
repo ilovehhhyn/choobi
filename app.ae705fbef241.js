@@ -3,7 +3,7 @@ const pet=document.querySelector('#pet');let helloIndex=0;const greetings=['read
 const tuiPanel = document.querySelector('#tui-panel');
 const tuiInput = document.querySelector('#tui-input');
 const tuiScreens = {
-  about: { lead: 'a little agent for the docs you forget to update.', detail: 'follows your commits. finds the right page.\nleaves a small docs commit. gets out of the way.', label: 'read the rest ↓' },
+  about: { lead: 'a little docs agent. more room for human thinking.', detail: 'keeps your docs in step with your code.\nso your team can understand it. and build on it.', label: 'read the rest ↓' },
   workflow: { lead: 'commit → read the diff → update the docs.', detail: 'a separate docs commit follows yours.\nnothing to document? nothing gets changed.', label: 'see the process ↓' },
   install: { lead: 'bring a choobi into your repository.', detail: 'Python 3.9+ · Git · Claude or Codex CLI\nset it up once. then carry on building.', label: 'open setup instructions ↓' }
 };
